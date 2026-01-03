@@ -54,7 +54,6 @@ const App: React.FC = () => {
     try {
       const saved = localStorage.getItem('jiya_vision_items');
       const parsed = saved ? JSON.parse(saved) : null;
-      // Ensure parsed is actually an array, otherwise fallback
       return Array.isArray(parsed) ? parsed : INITIAL_ITEMS;
     } catch (e) {
       console.error("Failed to load items", e);
@@ -98,6 +97,7 @@ const App: React.FC = () => {
   // --- Cloud Sync State ---
   const [boardId, setBoardId] = useState<string | null>(null);
   const [isDataLoaded, setIsDataLoaded] = useState(false); // Critical for preventing overwrite
+  const [isLoading, setIsLoading] = useState(true); // Loading screen state
   const [saveStatus, setSaveStatus] = useState<string>('');
   const [isUploading, setIsUploading] = useState(false);
 
@@ -124,7 +124,7 @@ const App: React.FC = () => {
 
   // Create Mode Unified State
   const [createType, setCreateType] = useState<'note' | 'image'>('note');
-  const [createContent, setCreateContent] = useState(''); // Text for note, URL for image
+  const [createContent, setCreateContent] = useState(''); 
   const [createTitle, setCreateTitle] = useState('');
   const [createDate, setCreateDate] = useState(new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }));
   const [createSticker, setCreateSticker] = useState('');
@@ -157,6 +157,7 @@ const App: React.FC = () => {
   // --- Initialization & URL Parsing ---
   useEffect(() => {
     const initApp = async () => {
+      setIsLoading(true);
       const params = new URLSearchParams(window.location.search);
       let idFromUrl = params.get('id');
 
@@ -169,7 +170,7 @@ const App: React.FC = () => {
       }
 
       if (idFromUrl) {
-        // LOAD EXISTING BOARD
+        // LOAD EXISTING BOARD (Cloud First Strategy)
         try {
           const data = await getCloudBoard(idFromUrl);
           
@@ -189,13 +190,13 @@ const App: React.FC = () => {
           
           setBoardId(idFromUrl);
           localStorage.setItem('jiya_board_id', idFromUrl);
-          // CRITICAL: Only mark loaded AFTER setting state from cloud
           setIsDataLoaded(true); 
           
         } catch (err) {
           console.error("Failed to load cloud board", err);
-          // In case of error, we don't set boardId, preventing overwrite of cloud data
-          // User will see local cache (initialized in useState)
+          // If fetch fails (e.g. offline), we fall back to what we loaded from localStorage in useState
+          // but we still mark data as loaded so user can edit (offline mode)
+          setIsDataLoaded(true);
         }
       } else {
         // CREATE NEW BOARD (AUTOMATICALLY GO LIVE)
@@ -208,11 +209,13 @@ const App: React.FC = () => {
           setBoardId(newId);
           localStorage.setItem('jiya_board_id', newId);
           updateUrlSafe(newId);
-          setIsDataLoaded(true); // Sync is safe now
+          setIsDataLoaded(true);
         } catch (e) {
           console.error("Auto-sync creation failed", e);
+          setIsDataLoaded(true); // Allow local usage even if creation fails
         }
       }
+      setIsLoading(false);
     };
     
     initApp();
@@ -226,8 +229,6 @@ const App: React.FC = () => {
     localStorage.setItem('jiya_chat_history', JSON.stringify(chatMessages));
 
     // 2. Cloud Auto-Save Logic (Debounced)
-    // Only run if we have a boardId AND data has been successfully loaded/initialized
-    // This prevents overwriting cloud data with initial local state during loading
     if (boardId && isDataLoaded) {
       setSaveStatus('Saving...');
       
@@ -244,11 +245,26 @@ const App: React.FC = () => {
           setTimeout(() => setSaveStatus(''), 2000);
         } catch (error) {
           console.error("Auto-save failed", error);
-          setSaveStatus('Save Failed!');
+          setSaveStatus('Offline'); // Indicate offline status if save fails
         }
       }, 1500); // 1.5s debounce
     }
   }, [items, headerConfig, chatMessages, boardId, isDataLoaded]);
+
+  // --- Reconnection Logic ---
+  useEffect(() => {
+    const handleOnline = () => {
+        console.log("Back online! Attempting to sync...");
+        if (boardId && isDataLoaded) {
+             setSaveStatus('Syncing...');
+             updateCloudBoard(boardId, { items, headerConfig, chatMessages })
+                .then(() => setSaveStatus('Synced'))
+                .catch(() => setSaveStatus('Error'));
+        }
+    };
+    window.addEventListener('online', handleOnline);
+    return () => window.removeEventListener('online', handleOnline);
+  }, [boardId, isDataLoaded, items, headerConfig, chatMessages]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -287,7 +303,6 @@ const App: React.FC = () => {
     if (data.items) setItems(data.items);
     if (data.headerConfig) setHeaderConfig(data.headerConfig);
     if (data.chatMessages) {
-       // Need to re-hydrate Dates
        const fixedMessages = data.chatMessages.map((msg: any) => ({
          ...msg,
          timestamp: new Date(msg.timestamp)
@@ -372,23 +387,17 @@ const App: React.FC = () => {
     if (file) {
       setIsUploading(true);
       try {
-        // Try uploading to Cloud Storage
         const uploadedUrl = await uploadMedia(file);
         setCreateContent(uploadedUrl);
       } catch (err: any) {
         console.error("Upload failed", err);
-        
-        // Fallback to Base64
         const reader = new FileReader();
         reader.onload = (e) => {
             const img = new Image();
             img.onload = () => {
-              // Create canvas for compression to avoid huge base64 strings
               const canvas = document.createElement('canvas');
               let width = img.width;
               let height = img.height;
-              
-              // Standard compression
               const MAX_SIZE = 800;
               if (width > height) {
                 if (width > MAX_SIZE) {
@@ -401,15 +410,13 @@ const App: React.FC = () => {
                   height = MAX_SIZE;
                 }
               }
-              
               canvas.width = width;
               canvas.height = height;
               const ctx = canvas.getContext('2d');
               ctx?.drawImage(img, 0, 0, width, height);
-              
               const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
               setCreateContent(dataUrl);
-              alert("⚠️ Cloud Upload Failed (Permission Denied). Image saved locally instead. \n\nTo fix cloud uploads, check your Firebase Storage Rules.");
+              alert("⚠️ Cloud Upload Failed. Saved locally.");
             };
             img.src = e.target?.result as string;
         };
@@ -417,7 +424,6 @@ const App: React.FC = () => {
 
       } finally {
         setIsUploading(false);
-        // Clear input so same file can be selected again if needed
         if (fileInputRef.current) fileInputRef.current.value = '';
       }
     }
@@ -453,7 +459,7 @@ const App: React.FC = () => {
     try {
       const base64Image = await generateManifestationImage(prompt);
       if (base64Image) {
-        setCreateContent(base64Image); // Auto fill the content with generated image
+        setCreateContent(base64Image); 
       }
     } catch (e) {
       console.error(e);
@@ -480,6 +486,17 @@ const App: React.FC = () => {
     setJournalTitle('');
     setJournalSticker('');
   };
+
+  // --- Loading Screen ---
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-[#fdf2f8] flex flex-col items-center justify-center p-4">
+        <div className="text-6xl mb-4 animate-bounce">✨</div>
+        <h1 className="text-2xl font-handwriting text-rose-500 mb-2">Syncing your Vision...</h1>
+        <p className="text-gray-400 text-sm">Getting the latest dreams from the cloud</p>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen pb-24 relative overflow-hidden bg-[#fdf2f8]">
@@ -524,7 +541,7 @@ const App: React.FC = () => {
          <SettingsModal onClose={() => setShowSettingsModal(false)} />
        )}
 
-       {/* Header - Compacted for Mobile & Cleaned Up */}
+       {/* Header */}
        <header className="relative z-10 p-4 sm:p-6 text-center group cursor-pointer" onClick={() => !isRearranging && setIsEditingHeader(true)}>
          <div className="relative inline-block">
             <h1 className="text-3xl sm:text-5xl font-handwriting text-rose-600 drop-shadow-sm floating">
@@ -622,7 +639,7 @@ const App: React.FC = () => {
                 </div>
               )}
 
-              {/* Footer Actions (Install, Sync & Rearrange) */}
+              {/* Footer Actions */}
               <div className="mt-12 mb-20 text-center space-y-4">
                 <div className="inline-flex items-center gap-4 sm:gap-6 bg-white/60 backdrop-blur-sm px-4 sm:px-6 py-3 rounded-full shadow-sm border border-white/50">
                    <button 
@@ -733,7 +750,7 @@ const App: React.FC = () => {
                      <p className="font-handwriting text-2xl text-gray-500">No entries yet. Write your first one!</p>
                    </div>
                  )}
-                 {items.filter(i => i.type === 'journal').slice().reverse().map((entry) => (
+                 {items.filter(i => i.type === 'journal').map((entry) => (
                    <div key={entry.id} className="bg-white p-4 sm:p-6 md:p-8 rounded-3xl shadow-sm border border-pink-50 hover:shadow-md transition-shadow relative overflow-hidden group">
                       <div className="absolute top-0 left-6 sm:left-8 bottom-0 w-[2px] bg-red-200 opacity-50"></div>
                       <div className="pl-6 sm:pl-8 relative z-10">
@@ -754,7 +771,7 @@ const App: React.FC = () => {
                             </button>
                           </div>
                         </div>
-                        <p className="font-handwriting text-base sm:text-xl text-gray-600 leading-relaxed whitespace-pre-wrap mt-2 sm:mt-4">
+                        <p className="font-handwriting text-sm sm:text-base text-gray-600 leading-relaxed whitespace-pre-wrap mt-2 sm:mt-4">
                           {entry.content}
                         </p>
                       </div>
