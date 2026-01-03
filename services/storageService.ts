@@ -1,11 +1,10 @@
 import { initializeApp } from 'firebase/app';
-import { getFirestore, doc, getDoc, setDoc } from 'firebase/firestore';
+import { getFirestore, doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
 import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 // --- CONFIGURATION ---
 const getFirebaseConfig = () => {
   // 1. Try Environment Variables (Priority)
-  // We check for at least API Key and Project ID to consider it valid
   if (process.env.FIREBASE_API_KEY && process.env.FIREBASE_PROJECT_ID) {
     return {
       apiKey: process.env.FIREBASE_API_KEY,
@@ -25,7 +24,7 @@ const getFirebaseConfig = () => {
     console.error("Invalid local firebase config", e);
   }
 
-  // 3. Default Hardcoded Config
+  // 3. Default Hardcoded Config (Fallback)
   return {
     apiKey: "AIzaSyBjN-Bgvd6n9HoAJzKfl4NiAh5nVPgssQw",
     authDomain: "jiyav-73e4b.firebaseapp.com",
@@ -50,7 +49,6 @@ if (isFirebaseEnabled) {
     console.log("🔥 Firebase initialized successfully");
   } catch (e) {
     console.error("Firebase init failed:", e);
-    // Fallback handled by checks below
   }
 } else {
   console.log("☁️ Firebase keys missing. Using Local Storage mode.");
@@ -59,7 +57,7 @@ if (isFirebaseEnabled) {
 // --- CONFIGURATION HELPERS ---
 export const saveFirebaseConfig = (config: any) => {
   localStorage.setItem('jiya_firebase_config', JSON.stringify(config));
-  window.location.reload(); // Reload to initialize firebase with new keys
+  window.location.reload(); 
 };
 
 export const clearFirebaseConfig = () => {
@@ -70,7 +68,7 @@ export const clearFirebaseConfig = () => {
 export const getCurrentConnectionStatus = () => isFirebaseEnabled;
 
 
-// --- LOCAL STORAGE FALLBACKS ---
+// --- STORAGE KEYS & UTILS ---
 const STORAGE_PREFIX = 'jiya_cloud_v1_';
 const getStorageKey = (id: string) => `${STORAGE_PREFIX}${id}`;
 const SIMULATED_DELAY = 100; 
@@ -98,11 +96,12 @@ export const createCloudBoard = async (data: any): Promise<string> => {
 export const updateCloudBoard = async (id: string, data: any): Promise<void> => {
   if (isFirebaseEnabled && db) {
     try {
+      // Optimistic update: Fire and forget mostly, let onSnapshot handle sync back
       await setDoc(doc(db, "boards", id), data, { merge: true });
       return;
     } catch (e) {
       console.warn("Firebase update failed", e);
-      throw e; // Propagate error to show "Sync Failed" in UI if real backend fails
+      throw e;
     }
   }
 
@@ -110,7 +109,7 @@ export const updateCloudBoard = async (id: string, data: any): Promise<void> => 
   await new Promise(resolve => setTimeout(resolve, SIMULATED_DELAY));
   localStorage.setItem(getStorageKey(id), JSON.stringify(data));
   
-  // Trigger event for cross-tab sync
+  // Trigger event for cross-tab sync in local mode
   window.dispatchEvent(new StorageEvent('storage', {
     key: getStorageKey(id),
     newValue: JSON.stringify(data)
@@ -118,6 +117,7 @@ export const updateCloudBoard = async (id: string, data: any): Promise<void> => 
 };
 
 export const getCloudBoard = async (id: string): Promise<any> => {
+  // This is used for initial load
   if (isFirebaseEnabled && db) {
     try {
       const docRef = doc(db, "boards", id);
@@ -128,7 +128,6 @@ export const getCloudBoard = async (id: string): Promise<any> => {
         throw new Error("Board not found");
       }
     } catch (e: any) {
-      // If authentic failure (permission/network), throw. 
       if (e.message === "Board not found") throw e;
       console.warn("Firebase get failed", e);
       throw e;
@@ -142,6 +141,25 @@ export const getCloudBoard = async (id: string): Promise<any> => {
     throw new Error('Board not found');
   }
   return JSON.parse(dataString);
+};
+
+// REAL-TIME LISTENER
+export const subscribeToBoard = (id: string, onUpdate: (data: any) => void) => {
+  if (isFirebaseEnabled && db) {
+    const docRef = doc(db, "boards", id);
+    // Real-time listener using onSnapshot as requested
+    const unsubscribe = onSnapshot(docRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        onUpdate(data);
+      }
+    }, (error) => {
+      console.error("Snapshot error:", error);
+    });
+    return unsubscribe;
+  }
+  
+  return () => {}; // No-op for local mode (handled via storage event elsewhere)
 };
 
 export const uploadMedia = async (file: File): Promise<string> => {

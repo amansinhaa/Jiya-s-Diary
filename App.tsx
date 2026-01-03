@@ -7,7 +7,7 @@ import HeaderEditModal from './components/HeaderEditModal';
 import DataManagementModal from './components/DataManagementModal';
 import SettingsModal from './components/SettingsModal';
 import { getBestieAdvice, generateStudyPlan, generateManifestationImage } from './services/geminiService';
-import { createCloudBoard, getCloudBoard, updateCloudBoard, uploadMedia } from './services/storageService';
+import { createCloudBoard, getCloudBoard, updateCloudBoard, uploadMedia, subscribeToBoard } from './services/storageService';
 import ReactMarkdown from 'react-markdown';
 
 const INITIAL_ITEMS: VisionItem[] = [
@@ -66,7 +66,6 @@ const App: React.FC = () => {
   const [isUploading, setIsUploading] = useState(false);
   const [isInteracting, setIsInteracting] = useState(false);
   
-  // Track if user has unsaved changes to prevent overwriting cloud data or echo-saving
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
 
   const [activeTab, setActiveTab] = useState<'board' | 'chat' | 'create' | 'journal'>('board');
@@ -112,7 +111,7 @@ const App: React.FC = () => {
   // Debounce Ref for Auto Save
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Refs for polling comparison
+  // Refs for tracking local state during updates
   const itemsRef = useRef(items);
   const headerRef = useRef(headerConfig);
   const chatRef = useRef(chatMessages);
@@ -126,10 +125,7 @@ const App: React.FC = () => {
     try {
       const newUrl = `${window.location.pathname}?id=${id}`;
       window.history.replaceState({ path: newUrl }, '', newUrl);
-    } catch (e) {
-      // Suppress error in restricted environments (blob/iframe)
-      // This prevents the console from looking scary when running in previews
-    }
+    } catch (e) { }
   };
 
   // --- Initialization & URL Parsing ---
@@ -144,7 +140,6 @@ const App: React.FC = () => {
       if (idFromUrl) updateUrlSafe(idFromUrl);
     }
 
-    // Attempt to load board
     if (idFromUrl) {
       try {
         const data = await getCloudBoard(idFromUrl);
@@ -163,7 +158,6 @@ const App: React.FC = () => {
         setHasUnsavedChanges(false); 
       } catch (err: any) {
         console.warn("Load failed, possibly new local session", err);
-        // Fallback silently to creating a new one if not found or local storage wiped
         createNewBoard();
       }
     } else {
@@ -195,13 +189,30 @@ const App: React.FC = () => {
     initApp();
   }, []);
 
-  // --- Polling & Cross-Tab Sync ---
+  // --- Real-Time Sync (Firestore Subscription) ---
   useEffect(() => {
     if (!boardId || !isDataLoaded) return;
 
-    // 1. Storage Event Listener (Instant Sync across Tabs)
+    // Subscribe to Firestore updates
+    const unsubscribe = subscribeToBoard(boardId, (newData) => {
+      // Prevent overwriting if we have local unsaved changes that are newer
+      // But in a real-time app, usually the server wins or we merge.
+      // For simplicity here: we only update if we are not actively interacting/editing
+      if (isInteracting || isEditingHeader || editingItem) return;
+
+      if (newData.items) setItems(newData.items);
+      if (newData.headerConfig) setHeaderConfig(newData.headerConfig);
+      if (newData.chatMessages) {
+         const fixedMessages = newData.chatMessages.map((msg: any) => ({
+             ...msg,
+             timestamp: new Date(msg.timestamp)
+         }));
+         setChatMessages(fixedMessages);
+      }
+    });
+
+    // Handle Local Storage Sync (fallback for non-firebase mode)
     const handleStorageChange = (e: StorageEvent) => {
-      // If our board data changed in another tab, update here
       if (e.key && e.key.includes(boardId)) {
          try {
            const newData = JSON.parse(e.newValue || '{}');
@@ -214,43 +225,16 @@ const App: React.FC = () => {
               }));
               setChatMessages(fixedMessages);
            }
-         } catch (err) {
-           console.error("Sync parse error", err);
-         }
+         } catch (err) { }
       }
     };
     window.addEventListener('storage', handleStorageChange);
 
-    // 2. Poll Interval (For single tab consistency check)
-    const pollInterval = setInterval(async () => {
-      if (isInteracting || hasUnsavedChanges || editingItem || showNewJournalForm) return;
-
-      try {
-        const cloudData = await getCloudBoard(boardId);
-        const currentDataStr = JSON.stringify({ items: itemsRef.current, headerConfig: headerRef.current });
-        const cloudDataStr = JSON.stringify({ items: cloudData.items, headerConfig: cloudData.headerConfig });
-
-        if (currentDataStr !== cloudDataStr) {
-           if (cloudData.items && Array.isArray(cloudData.items)) setItems(cloudData.items);
-           if (cloudData.headerConfig) setHeaderConfig(cloudData.headerConfig);
-           if (cloudData.chatMessages && cloudData.chatMessages.length !== chatRef.current.length) {
-              const fixedMessages = cloudData.chatMessages.map((msg: any) => ({
-                  ...msg,
-                  timestamp: new Date(msg.timestamp)
-              }));
-              setChatMessages(fixedMessages);
-           }
-        }
-      } catch (e) {
-        // Silent catch
-      }
-    }, 1000); // 1s polling for local storage is cheap
-
     return () => {
-       clearInterval(pollInterval);
+       unsubscribe();
        window.removeEventListener('storage', handleStorageChange);
     };
-  }, [boardId, isDataLoaded, isInteracting, hasUnsavedChanges, editingItem, showNewJournalForm]);
+  }, [boardId, isDataLoaded, isInteracting, isEditingHeader, editingItem]);
 
 
   // --- Auto Save Effects ---
@@ -892,7 +876,7 @@ const App: React.FC = () => {
                     className="w-full bg-pink-50 rounded-xl px-3 py-2 focus:ring-2 focus:ring-pink-300 outline-none text-gray-800 font-bold text-xs sm:text-sm"
                  />
                  
-                 {createType === 'note' ? (
+                 {createType === 'note' && (
                     <textarea 
                       value={createContent}
                       onChange={(e) => setCreateContent(e.target.value)}
