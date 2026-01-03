@@ -7,6 +7,7 @@ import HeaderEditModal from './components/HeaderEditModal';
 import DataManagementModal from './components/DataManagementModal';
 import SettingsModal from './components/SettingsModal';
 import { getBestieAdvice, generateStudyPlan, generateManifestationImage } from './services/geminiService';
+import { createCloudBoard, getCloudBoard, updateCloudBoard, uploadMedia } from './services/storageService';
 import ReactMarkdown from 'react-markdown';
 
 const INITIAL_ITEMS: VisionItem[] = [
@@ -52,7 +53,9 @@ const App: React.FC = () => {
   const [items, setItems] = useState<VisionItem[]>(() => {
     try {
       const saved = localStorage.getItem('jiya_vision_items');
-      return saved ? JSON.parse(saved) : INITIAL_ITEMS;
+      const parsed = saved ? JSON.parse(saved) : null;
+      // Ensure parsed is actually an array, otherwise fallback
+      return Array.isArray(parsed) ? parsed : INITIAL_ITEMS;
     } catch (e) {
       console.error("Failed to load items", e);
       return INITIAL_ITEMS;
@@ -62,7 +65,8 @@ const App: React.FC = () => {
   const [headerConfig, setHeaderConfig] = useState(() => {
     try {
       const saved = localStorage.getItem('jiya_header_config');
-      return saved ? JSON.parse(saved) : {
+      const parsed = saved ? JSON.parse(saved) : null;
+      return parsed && parsed.title ? parsed : {
         title: "Jiya's Era ✨",
         subtitle: "Undergrad • Future CEO • IIM Aspirant",
         hashtags: ["#LondonCalling", "#F1Girlie", "#Foodie", "#FitFab"]
@@ -90,6 +94,13 @@ const App: React.FC = () => {
     }
     return [{ role: 'model', text: "Hey Jiya! Ready to manifest that 9.5 CGPA and London trip? ✨", timestamp: new Date() }];
   });
+
+  // --- Cloud Sync State ---
+  const [boardId, setBoardId] = useState<string | null>(null);
+  const [syncStatus, setSyncStatus] = useState<'local' | 'syncing' | 'synced' | 'error'>('local');
+  const [showShareUrl, setShowShareUrl] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<string>('');
+  const [isUploading, setIsUploading] = useState(false);
 
   const [activeTab, setActiveTab] = useState<'board' | 'chat' | 'create' | 'journal'>('board');
   const [editingItem, setEditingItem] = useState<VisionItem | null>(null);
@@ -131,18 +142,70 @@ const App: React.FC = () => {
   // PWA Install State
   const [installPrompt, setInstallPrompt] = useState<any>(null);
 
-  // --- Persistence Effects ---
+  // Debounce Ref for Auto Save
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // --- Initialization & URL Parsing ---
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const idFromUrl = params.get('id');
+
+    if (idFromUrl) {
+      setSyncStatus('syncing');
+      getCloudBoard(idFromUrl)
+        .then(data => {
+          if (data.items && Array.isArray(data.items)) setItems(data.items);
+          if (data.headerConfig) setHeaderConfig(data.headerConfig);
+          if (data.chatMessages) {
+             const fixedMessages = data.chatMessages.map((msg: any) => ({
+               ...msg,
+               timestamp: new Date(msg.timestamp)
+             }));
+             setChatMessages(fixedMessages);
+          }
+          setBoardId(idFromUrl);
+          setSyncStatus('synced');
+        })
+        .catch(err => {
+          console.error("Failed to load cloud board", err);
+          setSyncStatus('error');
+          alert("Could not load shared board. Starting in local mode.");
+        });
+    }
+  }, []);
+
+  // --- Persistence & Auto Save Effects ---
+  useEffect(() => {
+    // 1. Always save to LocalStorage (as backup/offline)
     localStorage.setItem('jiya_vision_items', JSON.stringify(items));
-  }, [items]);
-
-  useEffect(() => {
     localStorage.setItem('jiya_header_config', JSON.stringify(headerConfig));
-  }, [headerConfig]);
-
-  useEffect(() => {
     localStorage.setItem('jiya_chat_history', JSON.stringify(chatMessages));
-  }, [chatMessages]);
+
+    // 2. Cloud Auto-Save Logic (Debounced)
+    if (boardId) {
+      setSyncStatus('syncing');
+      setSaveStatus('Saving...');
+      
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+
+      saveTimeoutRef.current = setTimeout(async () => {
+        try {
+          await updateCloudBoard(boardId, {
+            items,
+            headerConfig,
+            chatMessages
+          });
+          setSyncStatus('synced');
+          setSaveStatus('Cloud Saved');
+          setTimeout(() => setSaveStatus(''), 2000);
+        } catch (error) {
+          console.error("Auto-save failed", error);
+          setSyncStatus('error');
+          setSaveStatus('Save Failed!');
+        }
+      }, 1500); // 1.5s debounce to prevent spamming API
+    }
+  }, [items, headerConfig, chatMessages, boardId]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -160,6 +223,39 @@ const App: React.FC = () => {
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
     };
   }, []);
+
+  // --- Handlers ---
+
+  const handleGoLive = async () => {
+    if (boardId) {
+      setShowShareUrl(true);
+      return;
+    }
+
+    const confirmGoLive = window.confirm("Ready to sync? This will create a shareable link for your board so you can access it anywhere!");
+    if (!confirmGoLive) return;
+
+    setSyncStatus('syncing');
+    try {
+      const newId = await createCloudBoard({
+        items,
+        headerConfig,
+        chatMessages
+      });
+      setBoardId(newId);
+      setSyncStatus('synced');
+      
+      // Update URL without reload
+      const newUrl = `${window.location.pathname}?id=${newId}`;
+      window.history.pushState({ path: newUrl }, '', newUrl);
+      
+      setShowShareUrl(true);
+    } catch (error) {
+      console.error(error);
+      setSyncStatus('error');
+      alert("Failed to create cloud link. Check your internet or bucket permissions.");
+    }
+  };
 
   const handleInstallClick = () => {
     if (!installPrompt) {
@@ -259,44 +355,59 @@ const App: React.FC = () => {
     setDraggedItemIndex(null);
   };
 
-  const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const img = new Image();
-        img.onload = () => {
-          // Create canvas for compression
-          const canvas = document.createElement('canvas');
-          let width = img.width;
-          let height = img.height;
-          
-          // Max dimension 800px to keep base64 string manageable for sync
-          const MAX_SIZE = 800;
-          if (width > height) {
-            if (width > MAX_SIZE) {
-              height *= MAX_SIZE / width;
-              width = MAX_SIZE;
-            }
-          } else {
-            if (height > MAX_SIZE) {
-              width *= MAX_SIZE / height;
-              height = MAX_SIZE;
-            }
-          }
-          
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          ctx?.drawImage(img, 0, 0, width, height);
-          
-          // Compress to JPEG at 70% quality
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
-          setCreateContent(dataUrl);
+      setIsUploading(true);
+      try {
+        // Try uploading to Cloud Storage
+        const uploadedUrl = await uploadMedia(file);
+        setCreateContent(uploadedUrl);
+      } catch (err: any) {
+        console.error("Upload failed", err);
+        
+        // Fallback to Base64
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const img = new Image();
+            img.onload = () => {
+              // Create canvas for compression to avoid huge base64 strings
+              const canvas = document.createElement('canvas');
+              let width = img.width;
+              let height = img.height;
+              
+              // Standard compression
+              const MAX_SIZE = 800;
+              if (width > height) {
+                if (width > MAX_SIZE) {
+                  height *= MAX_SIZE / width;
+                  width = MAX_SIZE;
+                }
+              } else {
+                if (height > MAX_SIZE) {
+                  width *= MAX_SIZE / height;
+                  height = MAX_SIZE;
+                }
+              }
+              
+              canvas.width = width;
+              canvas.height = height;
+              const ctx = canvas.getContext('2d');
+              ctx?.drawImage(img, 0, 0, width, height);
+              
+              const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
+              setCreateContent(dataUrl);
+              alert("⚠️ Cloud Upload Failed (Permission Denied). Image saved locally instead. \n\nTo fix cloud uploads, check your Firebase Storage Rules.");
+            };
+            img.src = e.target?.result as string;
         };
-        img.src = e.target?.result as string;
-      };
-      reader.readAsDataURL(file);
+        reader.readAsDataURL(file);
+
+      } finally {
+        setIsUploading(false);
+        // Clear input so same file can be selected again if needed
+        if (fileInputRef.current) fileInputRef.current.value = '';
+      }
     }
   };
 
@@ -367,6 +478,35 @@ const App: React.FC = () => {
           <div className="absolute -bottom-8 left-20 w-72 h-72 bg-yellow-300 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-blob animation-delay-4000"></div>
        </div>
 
+       {/* Share URL Modal */}
+       {showShareUrl && (
+         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fadeIn">
+           <div className="bg-white rounded-3xl p-6 max-w-sm w-full shadow-2xl text-center">
+             <div className="w-16 h-16 bg-green-100 text-green-500 rounded-full flex items-center justify-center mx-auto mb-4 text-3xl">
+               <i className="fas fa-check"></i>
+             </div>
+             <h3 className="text-2xl font-bold text-gray-800 mb-2">You're Live! 🌐</h3>
+             <p className="text-gray-600 mb-4 text-sm">
+               Open this link on any device to see and edit your board instantly.
+             </p>
+             <div className="bg-gray-100 p-3 rounded-xl mb-4 break-all text-xs font-mono text-gray-500 border border-gray-200">
+               {window.location.href}
+             </div>
+             <button 
+               onClick={() => {
+                 navigator.clipboard.writeText(window.location.href);
+                 alert("Link copied!");
+                 setShowShareUrl(false);
+               }}
+               className="w-full bg-rose-500 text-white py-3 rounded-xl font-bold mb-2 shadow-lg"
+             >
+               Copy Link
+             </button>
+             <button onClick={() => setShowShareUrl(false)} className="text-gray-400 font-bold text-sm">Close</button>
+           </div>
+         </div>
+       )}
+
        {/* Modals */}
        {editingItem && (
          <EditModal 
@@ -414,6 +554,21 @@ const App: React.FC = () => {
             )}
          </div>
          <p className="text-gray-600 mt-2 font-medium text-xs sm:text-base">{headerConfig.subtitle}</p>
+         
+         {/* Sync Status Badge in Header */}
+         <div className="absolute top-4 right-4 flex flex-col items-end gap-1">
+           {saveStatus && (
+             <div className={`bg-white/80 backdrop-blur text-[10px] font-bold px-3 py-1 rounded-full shadow-sm border ${saveStatus.includes('Failed') ? 'text-red-500 border-red-200' : 'text-gray-500 border-white'}`}>
+               {saveStatus}
+             </div>
+           )}
+           {boardId && (
+             <div className="bg-green-100 text-green-600 px-2 py-0.5 rounded-md text-[10px] font-bold flex items-center gap-1">
+               <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span> Cloud Active
+             </div>
+           )}
+         </div>
+
          <div className="flex justify-center flex-wrap gap-1.5 mt-3 sm:mt-4 text-[10px] sm:text-sm text-rose-500 font-bold tracking-widest uppercase px-4">
             {headerConfig.hashtags.map((tag, i) => (
               <React.Fragment key={i}>
@@ -429,88 +584,123 @@ const App: React.FC = () => {
           {/* VISION BOARD TAB */}
           {activeTab === 'board' && (
             <div className="pb-20 mt-2">
-              <div className="columns-2 sm:columns-2 lg:columns-3 xl:columns-4 gap-6 space-y-6 mx-auto">
-                {items.filter(i => i.type !== 'journal').map((item, index) => (
-                  <div 
-                    key={item.id} 
-                    className={`break-inside-avoid inline-block w-full transition-all duration-200 ${isRearranging ? 'cursor-move hover:opacity-90' : ''}`}
-                    draggable={isRearranging}
-                    onDragStart={(e) => handleDragStart(e, index)}
-                    onDragOver={handleDragOver}
-                    onDrop={(e) => handleDrop(e, index)}
-                  >
-                    <div className={`flex justify-center relative ${isRearranging ? 'animate-wiggle' : ''}`}>
-                      {/* Delete button in Rearrange Mode */}
-                      {isRearranging && (
-                         <button 
-                           onClick={(e) => {
-                             e.stopPropagation();
-                             handleDeleteItem(item.id);
-                           }}
-                           className="absolute -top-3 -right-3 z-50 w-8 h-8 bg-red-500 text-white rounded-full shadow-lg flex items-center justify-center hover:bg-red-600 hover:scale-110 transition-all border-2 border-white"
-                         >
-                           <i className="fas fa-times text-sm"></i>
-                         </button>
-                      )}
+              {Array.isArray(items) && (
+                <div className="columns-2 sm:columns-2 lg:columns-3 xl:columns-4 gap-6 space-y-6 mx-auto">
+                  {items.filter(i => i.type !== 'journal').map((item, index) => (
+                    <div 
+                      key={item.id} 
+                      className={`break-inside-avoid inline-block w-full transition-all duration-200 ${isRearranging ? 'cursor-move hover:opacity-90' : ''}`}
+                      draggable={isRearranging}
+                      onDragStart={(e) => handleDragStart(e, index)}
+                      onDragOver={handleDragOver}
+                      onDrop={(e) => handleDrop(e, index)}
+                    >
+                      <div className={`flex justify-center relative ${isRearranging ? 'animate-wiggle' : ''}`}>
+                        {/* Delete button in Rearrange Mode */}
+                        {isRearranging && (
+                          <button 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteItem(item.id);
+                            }}
+                            className="absolute -top-3 -right-3 z-50 w-8 h-8 bg-red-500 text-white rounded-full shadow-lg flex items-center justify-center hover:bg-red-600 hover:scale-110 transition-all border-2 border-white"
+                          >
+                            <i className="fas fa-times text-sm"></i>
+                          </button>
+                        )}
 
-                      {/* Edit Button in Rearrange Mode for easy sticker editing access */}
-                      {isRearranging && (
-                        <button
-                          onClick={(e) => {
-                             e.stopPropagation();
-                             setEditingItem(item);
-                          }}
-                          className="absolute -top-3 -left-3 z-50 w-8 h-8 bg-blue-500 text-white rounded-full shadow-lg flex items-center justify-center hover:bg-blue-600 hover:scale-110 transition-all border-2 border-white"
-                        >
-                          <i className="fas fa-pencil-alt text-xs"></i>
-                        </button>
-                      )}
+                        {/* Edit Button in Rearrange Mode */}
+                        {isRearranging && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditingItem(item);
+                            }}
+                            className="absolute -top-3 -left-3 z-50 w-8 h-8 bg-blue-500 text-white rounded-full shadow-lg flex items-center justify-center hover:bg-blue-600 hover:scale-110 transition-all border-2 border-white"
+                          >
+                            <i className="fas fa-pencil-alt text-xs"></i>
+                          </button>
+                        )}
 
-                      {/* Wrapper for scaling and sizing */}
-                      <div style={{ transform: `scale(${item.scale || 1})`, transition: 'transform 0.2s' }}>
-                        {item.type === 'image' ? (
-                          <div className="w-40 sm:w-56">
-                            <Polaroid 
-                              src={item.content} 
-                              caption={item.title || 'Vibes'} 
-                              rotation={item.rotation || 'rotate-0'} 
+                        {/* Wrapper for scaling and sizing */}
+                        <div style={{ transform: `scale(${item.scale || 1})`, transition: 'transform 0.2s' }}>
+                          {item.type === 'image' ? (
+                            <div className="w-40 sm:w-56">
+                              <Polaroid 
+                                src={item.content} 
+                                caption={item.title || 'Vibes'} 
+                                rotation={item.rotation || 'rotate-0'} 
+                                sticker={item.sticker}
+                                onClick={!isRearranging ? () => setEditingItem(item) : undefined}
+                              />
+                            </div>
+                          ) : (
+                            <StickyNote 
+                              text={item.content} 
+                              color={item.color || 'bg-white'} 
+                              title={item.title}
+                              date={item.date}
                               sticker={item.sticker}
+                              fontSize={item.fontSize}
+                              rotation={item.rotation || 'rotate-0'} 
                               onClick={!isRearranging ? () => setEditingItem(item) : undefined}
                             />
-                          </div>
-                        ) : (
-                          <StickyNote 
-                            text={item.content} 
-                            color={item.color || 'bg-white'} 
-                            title={item.title}
-                            date={item.date}
-                            sticker={item.sticker}
-                            fontSize={item.fontSize}
-                            rotation={item.rotation || 'rotate-0'} 
-                            onClick={!isRearranging ? () => setEditingItem(item) : undefined}
-                          />
-                        )}
+                          )}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
 
               {/* Footer Actions (Install, Sync & Rearrange) */}
-              <div className="mt-16 mb-20 text-center">
+              <div className="mt-12 mb-20 text-center space-y-4">
+                
+                {/* Cloud Sync Banner - Light & Pastel Style */}
+                {!boardId ? (
+                  <div 
+                    onClick={handleGoLive}
+                    className="bg-white/80 backdrop-blur-md border border-pink-200 p-3 rounded-2xl inline-flex items-center gap-3 shadow-sm cursor-pointer hover:scale-[1.02] transition-transform max-w-sm mx-auto w-full justify-between hover:bg-white/90 hover:shadow-md group"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="bg-pink-100 p-2.5 rounded-xl text-rose-500 group-hover:scale-110 transition-transform">
+                        <i className="fas fa-cloud-upload-alt"></i>
+                      </div>
+                      <div className="text-left">
+                        <p className="font-bold text-xs uppercase text-rose-600 tracking-wide">Sync to Cloud</p>
+                        <p className="text-[10px] text-gray-500 font-medium">Save & Access everywhere</p>
+                      </div>
+                    </div>
+                    <div className="w-8 h-8 flex items-center justify-center rounded-full bg-pink-50 text-rose-400 group-hover:bg-rose-500 group-hover:text-white transition-colors">
+                      <i className="fas fa-chevron-right text-xs"></i>
+                    </div>
+                  </div>
+                ) : (
+                  <div 
+                    onClick={() => setShowShareUrl(true)}
+                    className="bg-white/80 backdrop-blur-md border border-green-200 p-3 rounded-2xl inline-flex items-center gap-3 shadow-sm cursor-pointer hover:scale-[1.02] transition-transform max-w-sm mx-auto w-full justify-between hover:bg-white/90 hover:shadow-md group"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="bg-green-100 p-2.5 rounded-xl text-green-500">
+                        <i className="fas fa-check-circle"></i>
+                      </div>
+                      <div className="text-left">
+                        <p className="font-bold text-xs uppercase text-green-600 tracking-wide">Synced & Live</p>
+                        <p className="text-[10px] text-gray-500 font-medium">Tap to share link</p>
+                      </div>
+                    </div>
+                    <div className="w-8 h-8 flex items-center justify-center rounded-full bg-green-50 text-green-400 group-hover:bg-green-500 group-hover:text-white transition-colors">
+                      <i className="fas fa-share-alt text-xs"></i>
+                    </div>
+                  </div>
+                )}
+
                 <div className="inline-flex items-center gap-4 sm:gap-6 bg-white/60 backdrop-blur-sm px-4 sm:px-6 py-3 rounded-full shadow-sm border border-white/50">
                    <button 
                      onClick={handleInstallClick}
                      className="text-gray-500 hover:text-rose-500 font-bold text-xs flex items-center gap-2 transition-colors"
                    >
-                     <i className="fas fa-download"></i> <span>Install</span>
-                   </button>
-                   <div className="w-px h-4 bg-gray-300"></div>
-                   <button 
-                     onClick={() => setShowDataModal(true)}
-                     className="text-gray-500 hover:text-rose-500 font-bold text-xs flex items-center gap-2 transition-colors"
-                   >
-                     <i className="fas fa-cloud"></i> <span>Sync</span>
+                     <i className="fas fa-download"></i> <span className="hidden sm:inline">Install</span>
                    </button>
                    <div className="w-px h-4 bg-gray-300"></div>
                    <button 
@@ -520,7 +710,7 @@ const App: React.FC = () => {
                      {isRearranging ? (
                        <><i className="fas fa-check"></i> Done</>
                      ) : (
-                       <><i className="fas fa-layer-group"></i> <span>Manage Board</span></>
+                       <><i className="fas fa-layer-group"></i> <span>Rearrange</span></>
                      )}
                    </button>
                    <div className="w-px h-4 bg-gray-300"></div>
@@ -792,10 +982,10 @@ const App: React.FC = () => {
                            />
                            <label 
                              htmlFor="image-upload"
-                             className="flex items-center justify-center w-full px-4 py-1.5 bg-pink-50 text-rose-500 rounded-xl cursor-pointer hover:bg-pink-100 transition-colors border-2 border-dashed border-pink-200"
+                             className={`flex items-center justify-center w-full px-4 py-1.5 bg-pink-50 text-rose-500 rounded-xl cursor-pointer hover:bg-pink-100 transition-colors border-2 border-dashed border-pink-200 ${isUploading ? 'opacity-50 cursor-wait' : ''}`}
                            >
-                             <i className="fas fa-cloud-upload-alt mr-2 text-sm"></i>
-                             <span className="font-bold text-[10px]">Choose file</span>
+                             <i className={`fas ${isUploading ? 'fa-spinner fa-spin' : 'fa-cloud-upload-alt'} mr-2 text-sm`}></i>
+                             <span className="font-bold text-[10px]">{isUploading ? 'Uploading...' : 'Choose file'}</span>
                            </label>
                         </div>
                       </div>
@@ -924,7 +1114,8 @@ const App: React.FC = () => {
 
                  <button 
                    onClick={handleAddItem}
-                   className="w-full py-2.5 mt-2 rounded-xl font-bold text-white bg-rose-500 hover:bg-rose-600 shadow-xl transform transition-transform hover:scale-[1.02] flex justify-center items-center gap-2 text-sm"
+                   disabled={isUploading}
+                   className={`w-full py-2.5 mt-2 rounded-xl font-bold text-white bg-rose-500 hover:bg-rose-600 shadow-xl transform transition-transform hover:scale-[1.02] flex justify-center items-center gap-2 text-sm ${isUploading ? 'opacity-50 cursor-not-allowed' : ''}`}
                  >
                    <i className="fas fa-thumbtack"></i> Pin to Vision Board
                  </button>
