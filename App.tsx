@@ -147,13 +147,23 @@ const App: React.FC = () => {
 
   // --- Initialization & URL Parsing ---
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const idFromUrl = params.get('id');
+    const initApp = async () => {
+      const params = new URLSearchParams(window.location.search);
+      let idFromUrl = params.get('id');
 
-    if (idFromUrl) {
-      setSyncStatus('syncing');
-      getCloudBoard(idFromUrl)
-        .then(data => {
+      // If no ID in URL, check local storage (persistence across reloads)
+      if (!idFromUrl) {
+        idFromUrl = localStorage.getItem('jiya_board_id');
+        if (idFromUrl) {
+           const newUrl = `${window.location.pathname}?id=${idFromUrl}`;
+           window.history.replaceState({ path: newUrl }, '', newUrl);
+        }
+      }
+
+      if (idFromUrl) {
+        setSyncStatus('syncing');
+        try {
+          const data = await getCloudBoard(idFromUrl);
           if (data.items && Array.isArray(data.items)) setItems(data.items);
           if (data.headerConfig) setHeaderConfig(data.headerConfig);
           if (data.chatMessages) {
@@ -164,14 +174,34 @@ const App: React.FC = () => {
              setChatMessages(fixedMessages);
           }
           setBoardId(idFromUrl);
+          localStorage.setItem('jiya_board_id', idFromUrl);
           setSyncStatus('synced');
-        })
-        .catch(err => {
+        } catch (err) {
           console.error("Failed to load cloud board", err);
           setSyncStatus('error');
-          alert("Could not load shared board. Starting in local mode.");
-        });
-    }
+          // Silently fail to local mode if fetch fails, but don't alert to avoid annoyance
+        }
+      } else {
+        // AUTOMATICALLY GO LIVE: Create a board if one doesn't exist
+        try {
+          // Use the initial state values for creation
+          const newId = await createCloudBoard({
+            items,
+            headerConfig,
+            chatMessages
+          });
+          setBoardId(newId);
+          localStorage.setItem('jiya_board_id', newId);
+          const newUrl = `${window.location.pathname}?id=${newId}`;
+          window.history.replaceState({ path: newUrl }, '', newUrl);
+          setSyncStatus('synced');
+        } catch (e) {
+          console.error("Auto-sync creation failed", e);
+        }
+      }
+    };
+    
+    initApp();
   }, []);
 
   // --- Persistence & Auto Save Effects ---
@@ -196,14 +226,14 @@ const App: React.FC = () => {
             chatMessages
           });
           setSyncStatus('synced');
-          setSaveStatus('Cloud Saved');
+          setSaveStatus('Saved');
           setTimeout(() => setSaveStatus(''), 2000);
         } catch (error) {
           console.error("Auto-save failed", error);
           setSyncStatus('error');
           setSaveStatus('Save Failed!');
         }
-      }, 1500); // 1.5s debounce to prevent spamming API
+      }, 1500); // 1.5s debounce
     }
   }, [items, headerConfig, chatMessages, boardId]);
 
@@ -225,37 +255,6 @@ const App: React.FC = () => {
   }, []);
 
   // --- Handlers ---
-
-  const handleGoLive = async () => {
-    if (boardId) {
-      setShowShareUrl(true);
-      return;
-    }
-
-    const confirmGoLive = window.confirm("Ready to sync? This will create a shareable link for your board so you can access it anywhere!");
-    if (!confirmGoLive) return;
-
-    setSyncStatus('syncing');
-    try {
-      const newId = await createCloudBoard({
-        items,
-        headerConfig,
-        chatMessages
-      });
-      setBoardId(newId);
-      setSyncStatus('synced');
-      
-      // Update URL without reload
-      const newUrl = `${window.location.pathname}?id=${newId}`;
-      window.history.pushState({ path: newUrl }, '', newUrl);
-      
-      setShowShareUrl(true);
-    } catch (error) {
-      console.error(error);
-      setSyncStatus('error');
-      alert("Failed to create cloud link. Check your internet or bucket permissions.");
-    }
-  };
 
   const handleInstallClick = () => {
     if (!installPrompt) {
@@ -555,20 +554,6 @@ const App: React.FC = () => {
          </div>
          <p className="text-gray-600 mt-2 font-medium text-xs sm:text-base">{headerConfig.subtitle}</p>
          
-         {/* Sync Status Badge in Header */}
-         <div className="absolute top-4 right-4 flex flex-col items-end gap-1">
-           {saveStatus && (
-             <div className={`bg-white/80 backdrop-blur text-[10px] font-bold px-3 py-1 rounded-full shadow-sm border ${saveStatus.includes('Failed') ? 'text-red-500 border-red-200' : 'text-gray-500 border-white'}`}>
-               {saveStatus}
-             </div>
-           )}
-           {boardId && (
-             <div className="bg-green-100 text-green-600 px-2 py-0.5 rounded-md text-[10px] font-bold flex items-center gap-1">
-               <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span> Cloud Active
-             </div>
-           )}
-         </div>
-
          <div className="flex justify-center flex-wrap gap-1.5 mt-3 sm:mt-4 text-[10px] sm:text-sm text-rose-500 font-bold tracking-widest uppercase px-4">
             {headerConfig.hashtags.map((tag, i) => (
               <React.Fragment key={i}>
@@ -656,44 +641,7 @@ const App: React.FC = () => {
               {/* Footer Actions (Install, Sync & Rearrange) */}
               <div className="mt-12 mb-20 text-center space-y-4">
                 
-                {/* Cloud Sync Banner - Light & Pastel Style */}
-                {!boardId ? (
-                  <div 
-                    onClick={handleGoLive}
-                    className="bg-white/80 backdrop-blur-md border border-pink-200 p-3 rounded-2xl inline-flex items-center gap-3 shadow-sm cursor-pointer hover:scale-[1.02] transition-transform max-w-sm mx-auto w-full justify-between hover:bg-white/90 hover:shadow-md group"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="bg-pink-100 p-2.5 rounded-xl text-rose-500 group-hover:scale-110 transition-transform">
-                        <i className="fas fa-cloud-upload-alt"></i>
-                      </div>
-                      <div className="text-left">
-                        <p className="font-bold text-xs uppercase text-rose-600 tracking-wide">Sync to Cloud</p>
-                        <p className="text-[10px] text-gray-500 font-medium">Save & Access everywhere</p>
-                      </div>
-                    </div>
-                    <div className="w-8 h-8 flex items-center justify-center rounded-full bg-pink-50 text-rose-400 group-hover:bg-rose-500 group-hover:text-white transition-colors">
-                      <i className="fas fa-chevron-right text-xs"></i>
-                    </div>
-                  </div>
-                ) : (
-                  <div 
-                    onClick={() => setShowShareUrl(true)}
-                    className="bg-white/80 backdrop-blur-md border border-green-200 p-3 rounded-2xl inline-flex items-center gap-3 shadow-sm cursor-pointer hover:scale-[1.02] transition-transform max-w-sm mx-auto w-full justify-between hover:bg-white/90 hover:shadow-md group"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="bg-green-100 p-2.5 rounded-xl text-green-500">
-                        <i className="fas fa-check-circle"></i>
-                      </div>
-                      <div className="text-left">
-                        <p className="font-bold text-xs uppercase text-green-600 tracking-wide">Synced & Live</p>
-                        <p className="text-[10px] text-gray-500 font-medium">Tap to share link</p>
-                      </div>
-                    </div>
-                    <div className="w-8 h-8 flex items-center justify-center rounded-full bg-green-50 text-green-400 group-hover:bg-green-500 group-hover:text-white transition-colors">
-                      <i className="fas fa-share-alt text-xs"></i>
-                    </div>
-                  </div>
-                )}
+                {/* Sync Banner REMOVED here per user request */}
 
                 <div className="inline-flex items-center gap-4 sm:gap-6 bg-white/60 backdrop-blur-sm px-4 sm:px-6 py-3 rounded-full shadow-sm border border-white/50">
                    <button 
