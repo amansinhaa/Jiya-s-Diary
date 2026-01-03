@@ -145,6 +145,18 @@ const App: React.FC = () => {
   // Debounce Ref for Auto Save
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Helper to safely update URL
+  const updateUrlSafe = (id: string) => {
+    try {
+      const newUrl = `${window.location.pathname}?id=${id}`;
+      // In blob/sandboxed environments, history API might be restricted or throw errors
+      // if the origin is opaque (blob:...). We try-catch to avoid crashing the app.
+      window.history.replaceState({ path: newUrl }, '', newUrl);
+    } catch (e) {
+      console.warn("Could not update URL (likely due to sandbox environment). ID is saved in localStorage.", e);
+    }
+  };
+
   // --- Initialization & URL Parsing ---
   useEffect(() => {
     const initApp = async () => {
@@ -155,8 +167,7 @@ const App: React.FC = () => {
       if (!idFromUrl) {
         idFromUrl = localStorage.getItem('jiya_board_id');
         if (idFromUrl) {
-           const newUrl = `${window.location.pathname}?id=${idFromUrl}`;
-           window.history.replaceState({ path: newUrl }, '', newUrl);
+           updateUrlSafe(idFromUrl);
         }
       }
 
@@ -192,8 +203,7 @@ const App: React.FC = () => {
           });
           setBoardId(newId);
           localStorage.setItem('jiya_board_id', newId);
-          const newUrl = `${window.location.pathname}?id=${newId}`;
-          window.history.replaceState({ path: newUrl }, '', newUrl);
+          updateUrlSafe(newId);
           setSyncStatus('synced');
         } catch (e) {
           console.error("Auto-sync creation failed", e);
