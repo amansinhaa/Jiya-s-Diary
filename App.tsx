@@ -49,57 +49,22 @@ const FONT_SIZES = [
 
 const App: React.FC = () => {
   // --- Persistent State Initialization ---
-  
-  const [items, setItems] = useState<VisionItem[]>(() => {
-    try {
-      const saved = localStorage.getItem('jiya_vision_items');
-      const parsed = saved ? JSON.parse(saved) : null;
-      return Array.isArray(parsed) ? parsed : INITIAL_ITEMS;
-    } catch (e) {
-      console.error("Failed to load items", e);
-      return INITIAL_ITEMS;
-    }
+  // Defaulting to empty or initial to enforce cloud-first loading logic
+  const [items, setItems] = useState<VisionItem[]>([]);
+  const [headerConfig, setHeaderConfig] = useState({
+    title: "Jiya's Era ✨",
+    subtitle: "Undergrad • Future CEO • IIM Aspirant",
+    hashtags: ["#LondonCalling", "#F1Girlie", "#Foodie", "#FitFab"]
   });
-
-  const [headerConfig, setHeaderConfig] = useState(() => {
-    try {
-      const saved = localStorage.getItem('jiya_header_config');
-      const parsed = saved ? JSON.parse(saved) : null;
-      return parsed && parsed.title ? parsed : {
-        title: "Jiya's Era ✨",
-        subtitle: "Undergrad • Future CEO • IIM Aspirant",
-        hashtags: ["#LondonCalling", "#F1Girlie", "#Foodie", "#FitFab"]
-      };
-    } catch (e) {
-      return {
-        title: "Jiya's Era ✨",
-        subtitle: "Undergrad • Future CEO • IIM Aspirant",
-        hashtags: ["#LondonCalling", "#F1Girlie", "#Foodie", "#FitFab"]
-      };
-    }
-  });
-
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>(() => {
-    try {
-      const saved = localStorage.getItem('jiya_chat_history');
-      if (saved) {
-        return JSON.parse(saved).map((msg: any) => ({
-          ...msg,
-          timestamp: new Date(msg.timestamp)
-        }));
-      }
-    } catch (e) {
-      console.error("Failed to load chat", e);
-    }
-    return [{ role: 'model', text: "Hey Jiya! Ready to manifest that 9.5 CGPA and London trip? ✨", timestamp: new Date() }];
-  });
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([{ role: 'model', text: "Hey Jiya! Ready to manifest that 9.5 CGPA and London trip? ✨", timestamp: new Date() }]);
 
   // --- Cloud Sync State ---
   const [boardId, setBoardId] = useState<string | null>(null);
-  const [isDataLoaded, setIsDataLoaded] = useState(false); // Critical for preventing overwrite
-  const [isLoading, setIsLoading] = useState(true); // Loading screen state
+  const [isDataLoaded, setIsDataLoaded] = useState(false); 
+  const [isLoading, setIsLoading] = useState(true); 
   const [saveStatus, setSaveStatus] = useState<string>('');
   const [isUploading, setIsUploading] = useState(false);
+  const [isInteracting, setIsInteracting] = useState(false); // New: Track if user is busy to pause polling overwrites
 
   const [activeTab, setActiveTab] = useState<'board' | 'chat' | 'create' | 'journal'>('board');
   const [editingItem, setEditingItem] = useState<VisionItem | null>(null);
@@ -144,6 +109,16 @@ const App: React.FC = () => {
   // Debounce Ref for Auto Save
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Refs for polling comparison to avoid dependency loops
+  const itemsRef = useRef(items);
+  const headerRef = useRef(headerConfig);
+  const chatRef = useRef(chatMessages);
+
+  // Update refs when state changes
+  useEffect(() => { itemsRef.current = items; }, [items]);
+  useEffect(() => { headerRef.current = headerConfig; }, [headerConfig]);
+  useEffect(() => { chatRef.current = chatMessages; }, [chatMessages]);
+
   // Helper to safely update URL
   const updateUrlSafe = (id: string) => {
     try {
@@ -161,8 +136,9 @@ const App: React.FC = () => {
       const params = new URLSearchParams(window.location.search);
       let idFromUrl = params.get('id');
 
-      // If no ID in URL, check local storage (persistence across reloads)
+      // 1. Try URL
       if (!idFromUrl) {
+        // 2. Try LocalStorage ID
         idFromUrl = localStorage.getItem('jiya_board_id');
         if (idFromUrl) {
            updateUrlSafe(idFromUrl);
@@ -172,14 +148,15 @@ const App: React.FC = () => {
       if (idFromUrl) {
         // LOAD EXISTING BOARD (Cloud First Strategy)
         try {
+          // Check internet first - if offline, load from local storage backup immediately
+          if (!navigator.onLine) {
+             throw new Error("Offline");
+          }
+
           const data = await getCloudBoard(idFromUrl);
           
-          if (data.items && Array.isArray(data.items)) {
-              setItems(data.items);
-          }
-          if (data.headerConfig) {
-              setHeaderConfig(data.headerConfig);
-          }
+          if (data.items && Array.isArray(data.items)) setItems(data.items);
+          if (data.headerConfig) setHeaderConfig(data.headerConfig);
           if (data.chatMessages) {
              const fixedMessages = data.chatMessages.map((msg: any) => ({
                ...msg,
@@ -193,26 +170,45 @@ const App: React.FC = () => {
           setIsDataLoaded(true); 
           
         } catch (err) {
-          console.error("Failed to load cloud board", err);
-          // If fetch fails (e.g. offline), we fall back to what we loaded from localStorage in useState
-          // but we still mark data as loaded so user can edit (offline mode)
-          setIsDataLoaded(true);
+          console.log("Cloud load failed or offline, falling back to local storage", err);
+          // Fallback to local storage
+          try {
+            const savedItems = localStorage.getItem('jiya_vision_items');
+            if (savedItems) setItems(JSON.parse(savedItems));
+            else setItems(INITIAL_ITEMS);
+
+            const savedHeader = localStorage.getItem('jiya_header_config');
+            if (savedHeader) setHeaderConfig(JSON.parse(savedHeader));
+
+            const savedChat = localStorage.getItem('jiya_chat_history');
+            if (savedChat) {
+                setChatMessages(JSON.parse(savedChat).map((m:any) => ({...m, timestamp: new Date(m.timestamp)})));
+            }
+            if (idFromUrl) setBoardId(idFromUrl); // Keep ID for reconnection
+            setIsDataLoaded(true);
+          } catch (localErr) {
+            console.error("Local load failed", localErr);
+            setItems(INITIAL_ITEMS);
+            setIsDataLoaded(true);
+          }
         }
       } else {
         // CREATE NEW BOARD (AUTOMATICALLY GO LIVE)
         try {
           const newId = await createCloudBoard({
-            items,
+            items: INITIAL_ITEMS,
             headerConfig,
             chatMessages
           });
+          setItems(INITIAL_ITEMS); // Set initial state
           setBoardId(newId);
           localStorage.setItem('jiya_board_id', newId);
           updateUrlSafe(newId);
           setIsDataLoaded(true);
         } catch (e) {
-          console.error("Auto-sync creation failed", e);
-          setIsDataLoaded(true); // Allow local usage even if creation fails
+          console.error("Auto-sync creation failed, starting offline", e);
+          setItems(INITIAL_ITEMS);
+          setIsDataLoaded(true); 
         }
       }
       setIsLoading(false);
@@ -221,10 +217,53 @@ const App: React.FC = () => {
     initApp();
   }, []);
 
+  // --- Polling for Real-Time-ish Updates ---
+  useEffect(() => {
+    if (!boardId || !isDataLoaded) return;
+
+    const pollInterval = setInterval(async () => {
+      // Logic: Only fetch updates if:
+      // 1. We have an ID
+      // 2. We are online
+      // 3. User is NOT currently interacting (dragging, editing modal open) to prevent overwriting their active work
+      // 4. We are NOT currently saving (to avoid race condition where we fetch our own just-sent stale data)
+      if (!navigator.onLine || isInteracting || saveStatus === 'Saving...' || editingItem || showNewJournalForm) return;
+
+      try {
+        const cloudData = await getCloudBoard(boardId);
+        
+        // Compare with current state (using Refs to access latest state without re-running effect)
+        const currentDataStr = JSON.stringify({ items: itemsRef.current, headerConfig: headerRef.current });
+        const cloudDataStr = JSON.stringify({ items: cloudData.items, headerConfig: cloudData.headerConfig });
+
+        if (currentDataStr !== cloudDataStr) {
+           console.log("🔄 Syncing changes from cloud...");
+           if (cloudData.items && Array.isArray(cloudData.items)) setItems(cloudData.items);
+           if (cloudData.headerConfig) setHeaderConfig(cloudData.headerConfig);
+           if (cloudData.chatMessages) {
+             // Only update chat if length differs to avoid scroll jumps, simplified for now
+             if (cloudData.chatMessages.length !== chatRef.current.length) {
+                const fixedMessages = cloudData.chatMessages.map((msg: any) => ({
+                    ...msg,
+                    timestamp: new Date(msg.timestamp)
+                }));
+                setChatMessages(fixedMessages);
+             }
+           }
+        }
+      } catch (e) {
+        // Silent polling fail
+      }
+    }, 3000); // Poll every 3 seconds
+
+    return () => clearInterval(pollInterval);
+  }, [boardId, isDataLoaded, isInteracting, saveStatus, editingItem, showNewJournalForm]);
+
+
   // --- Persistence & Auto Save Effects ---
   useEffect(() => {
     // 1. Always save to LocalStorage (as backup/offline)
-    localStorage.setItem('jiya_vision_items', JSON.stringify(items));
+    if (items.length > 0) localStorage.setItem('jiya_vision_items', JSON.stringify(items));
     localStorage.setItem('jiya_header_config', JSON.stringify(headerConfig));
     localStorage.setItem('jiya_chat_history', JSON.stringify(chatMessages));
 
@@ -236,25 +275,29 @@ const App: React.FC = () => {
 
       saveTimeoutRef.current = setTimeout(async () => {
         try {
-          await updateCloudBoard(boardId, {
-            items,
-            headerConfig,
-            chatMessages
-          });
-          setSaveStatus('Saved');
-          setTimeout(() => setSaveStatus(''), 2000);
+          if (navigator.onLine) {
+            await updateCloudBoard(boardId, {
+                items,
+                headerConfig,
+                chatMessages
+            });
+            setSaveStatus('Saved');
+            setTimeout(() => setSaveStatus(''), 2000);
+          } else {
+             setSaveStatus('Offline (Saved Locally)');
+          }
         } catch (error) {
           console.error("Auto-save failed", error);
-          setSaveStatus('Offline'); // Indicate offline status if save fails
+          setSaveStatus('Offline (Saved Locally)');
         }
-      }, 1500); // 1.5s debounce
+      }, 1000); // Fast 1s debounce
     }
   }, [items, headerConfig, chatMessages, boardId, isDataLoaded]);
 
   // --- Reconnection Logic ---
   useEffect(() => {
     const handleOnline = () => {
-        console.log("Back online! Attempting to sync...");
+        console.log("Back online! pushing local changes...");
         if (boardId && isDataLoaded) {
              setSaveStatus('Syncing...');
              updateCloudBoard(boardId, { items, headerConfig, chatMessages })
@@ -330,7 +373,7 @@ const App: React.FC = () => {
     if (!createContent.trim()) return;
 
     const newItem: VisionItem = {
-      id: Date.now().toString(),
+      id: Date.now().toString() + Math.random().toString(36).substr(2, 9), // Unique ID for collaboration safety
       type: createType,
       content: createContent,
       title: createTitle || (createType === 'image' ? 'Vibes' : 'Untitled'),
@@ -357,6 +400,7 @@ const App: React.FC = () => {
   // --- Drag and Drop Logic ---
 
   const handleDragStart = (e: React.DragEvent, index: number) => {
+    setIsInteracting(true); // Pause polling
     setDraggedItemIndex(index);
     e.dataTransfer.effectAllowed = "move";
   };
@@ -368,6 +412,7 @@ const App: React.FC = () => {
 
   const handleDrop = (e: React.DragEvent, targetIndex: number) => {
     e.preventDefault();
+    setIsInteracting(false); // Resume polling possibility (after save)
     if (draggedItemIndex === null || draggedItemIndex === targetIndex) return;
 
     const boardItems = items.filter(i => i.type !== 'journal');
@@ -470,8 +515,9 @@ const App: React.FC = () => {
 
   const addJournalEntry = () => {
     if (!journalText.trim()) return;
+    setIsInteracting(true); // Flag interaction to prevent poll overwrite immediately
     const newItem: VisionItem = {
-      id: Date.now().toString(),
+      id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
       type: 'journal',
       content: journalText,
       title: journalTitle || 'Dear Diary',
@@ -485,6 +531,9 @@ const App: React.FC = () => {
     setJournalText('');
     setJournalTitle('');
     setJournalSticker('');
+    
+    // Allow debounce to save, then polling will resume naturally after user stops interacting with form
+    setTimeout(() => setIsInteracting(false), 2000);
   };
 
   // --- Loading Screen ---
