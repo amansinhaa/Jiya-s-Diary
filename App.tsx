@@ -127,7 +127,8 @@ const App: React.FC = () => {
       const newUrl = `${window.location.pathname}?id=${id}`;
       window.history.replaceState({ path: newUrl }, '', newUrl);
     } catch (e) {
-      console.warn("Could not update URL", e);
+      // Suppress error in restricted environments (blob/iframe)
+      // This prevents the console from looking scary when running in previews
     }
   };
 
@@ -459,6 +460,21 @@ const App: React.FC = () => {
     markDirty();
   };
 
+  // Helper to extract numeric rotation for wrapper style
+  const getRotateTransform = (rot?: string) => {
+    if (!rot) return '';
+    const match = rot.match(/rotate-\[?(-?\d+)(deg)?\]?/);
+    if (match) return `rotate(${match[1]}deg)`;
+    
+    const standardMatch = rot.match(/(-?)rotate-(\d+)/);
+    if (standardMatch) {
+      const sign = standardMatch[1] === '-' ? -1 : 1;
+      const val = parseInt(standardMatch[2]);
+      return `rotate(${sign * val}deg)`;
+    }
+    return '';
+  };
+
   if (isLoading) {
     return (
       <div className="min-h-screen bg-[#fdf2f8] flex flex-col items-center justify-center p-4">
@@ -467,8 +483,6 @@ const App: React.FC = () => {
       </div>
     );
   }
-
-  // Error screen is removed as we fallback to local now.
 
   return (
     <div className="min-h-screen pb-24 relative overflow-hidden bg-[#fdf2f8]">
@@ -581,13 +595,17 @@ const App: React.FC = () => {
                           </button>
                         )}
 
-                        <div style={{ transform: `scale(${item.scale || 1})`, transition: 'transform 0.2s' }}>
+                        {/* Apply transform to wrapper to prevent inline style conflict with hover effects */}
+                        <div style={{ 
+                           transform: `scale(${item.scale || 1}) ${getRotateTransform(item.rotation)}`, 
+                           transition: 'transform 0.2s' 
+                        }}>
                           {item.type === 'image' ? (
                             <div className="w-40 sm:w-56">
                               <Polaroid 
                                 src={item.content} 
                                 caption={item.title || 'Vibes'} 
-                                rotation={item.rotation || 'rotate-0'} 
+                                rotation="" 
                                 sticker={item.sticker}
                                 onClick={!isRearranging ? () => setEditingItem(item) : undefined}
                               />
@@ -600,7 +618,7 @@ const App: React.FC = () => {
                               date={item.date}
                               sticker={item.sticker}
                               fontSize={item.fontSize}
-                              rotation={item.rotation || 'rotate-0'} 
+                              rotation="" 
                               onClick={!isRearranging ? () => setEditingItem(item) : undefined}
                             />
                           )}
@@ -650,7 +668,8 @@ const App: React.FC = () => {
               </div>
             </div>
           )}
-
+          
+          {/* ... Rest of Tab Logic for journal, chat, create ... */}
           {activeTab === 'journal' && (
             <div className="max-w-3xl mx-auto pb-24">
                <div className="flex justify-between items-center mb-6 bg-white/50 p-3 sm:p-4 rounded-2xl backdrop-blur-sm">
@@ -811,6 +830,8 @@ const App: React.FC = () => {
                <h2 className="text-xl sm:text-2xl font-handwriting text-gray-800 mb-2 text-center">Manifest Something New</h2>
                
                <div className="space-y-2 animate-fadeIn">
+                 {/* ... Create Tab Content (No changes needed except verify rotation logic in preview) ... */}
+                 {/* Note: The preview here uses separate rotation handling, which is fine for the modal */}
                  <div className="flex bg-pink-100 p-1 rounded-xl mb-2">
                     <button 
                       onClick={() => setCreateType('note')}
@@ -829,24 +850,26 @@ const App: React.FC = () => {
                  <div className="flex justify-center py-2 bg-pink-50/50 rounded-xl mb-2 border border-pink-100 border-dashed min-h-[140px] items-center overflow-hidden">
                     <div style={{ transform: `scale(${createScale * 0.7})`, transition: 'transform 0.2s' }}>
                       {createType === 'note' ? (
-                        <StickyNote 
-                          text={createContent || "Your text here..."}
-                          title={createTitle || "Title"}
-                          date={createDate}
-                          sticker={createSticker}
-                          color={createColor}
-                          fontSize={createFontSize}
-                          rotation={`rotate-[${createRotation}deg]`}
-                          className="shadow-md"
-                        />
+                        <div style={{ transform: `rotate(${createRotation}deg)` }}>
+                          <StickyNote 
+                            text={createContent || "Your text here..."}
+                            title={createTitle || "Title"}
+                            date={createDate}
+                            sticker={createSticker}
+                            color={createColor}
+                            fontSize={createFontSize}
+                            rotation="" // Pass empty, we handle it in wrapper
+                            className="shadow-md"
+                          />
+                        </div>
                       ) : (
                          createContent ? (
-                           <div className={`rotate-[${createRotation}deg]`}>
+                           <div style={{ transform: `rotate(${createRotation}deg)` }}>
                              <div className="w-40 sm:w-56">
                                 <Polaroid 
                                     src={createContent} 
                                     caption={createTitle || "Caption"} 
-                                    rotation="rotate-0" 
+                                    rotation="" 
                                     sticker={createSticker}
                                 />
                              </div>

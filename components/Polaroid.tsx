@@ -9,27 +9,9 @@ interface PolaroidProps {
 }
 
 const Polaroid: React.FC<PolaroidProps> = ({ src, caption, rotation, sticker, onClick }) => {
-  // Helper to extract numeric rotation
-  const getRotationStyle = (rot: string) => {
-    if (!rot) return { transform: 'rotate(0deg)' };
-    
-    const match = rot.match(/rotate-\[?(-?\d+)(deg)?\]?/);
-    if (match) return { transform: `rotate(${match[1]}deg)` };
-    
-    const standardMatch = rot.match(/(-?)rotate-(\d+)/);
-    if (standardMatch) {
-      const sign = standardMatch[1] === '-' ? -1 : 1;
-      const val = parseInt(standardMatch[2]);
-      return { transform: `rotate(${sign * val}deg)` };
-    }
-
-    return { transform: 'rotate(0deg)' };
-  };
-
   return (
     <div 
       onClick={onClick}
-      style={getRotationStyle(rotation)}
       className={`bg-white p-3 pb-8 shadow-lg transition-all hover:scale-110 hover:z-20 ${onClick ? 'cursor-pointer' : ''} relative group`}
     >
       <div className="overflow-hidden aspect-square mb-3 bg-gray-100">

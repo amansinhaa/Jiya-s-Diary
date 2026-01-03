@@ -15,33 +15,9 @@ interface StickyNoteProps {
 const StickyNote: React.FC<StickyNoteProps> = ({ text, color, rotation, title, date, sticker, fontSize, className, onClick }) => {
   const textSizeClass = fontSize || "text-lg sm:text-2xl";
 
-  // Helper to extract numeric rotation from Tailwind class or use raw value
-  const getRotationStyle = (rot: string) => {
-    if (!rot) return { transform: 'rotate(0deg)' };
-    
-    // Check for arbitrary value format: rotate-[5deg]
-    const match = rot.match(/rotate-\[?(-?\d+)(deg)?\]?/);
-    if (match) {
-      return { transform: `rotate(${match[1]}deg)` };
-    }
-    
-    // Check for standard Tailwind classes: rotate-1, -rotate-2, etc.
-    const standardMatch = rot.match(/(-?)rotate-(\d+)/);
-    if (standardMatch) {
-      const sign = standardMatch[1] === '-' ? -1 : 1;
-      const val = parseInt(standardMatch[2]);
-      // Approximate mappings for standard Tailwind rotate classes
-      // 1=1deg, 2=2deg, 3=3deg, 6=6deg, 12=12deg
-      return { transform: `rotate(${sign * val}deg)` };
-    }
-
-    return { transform: 'rotate(0deg)' };
-  };
-
   return (
     <div 
       onClick={onClick}
-      style={getRotationStyle(rotation)}
       className={`relative p-4 sm:p-6 shadow-xl transition-all hover:scale-105 hover:z-20 flex flex-col justify-between items-center text-center w-40 min-h-[160px] sm:w-56 sm:min-h-[220px] ${color} ${className} ${onClick ? 'cursor-pointer' : ''}`}
     >
       {/* Tape effect */}
