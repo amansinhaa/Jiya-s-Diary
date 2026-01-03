@@ -158,10 +158,10 @@ const App: React.FC = () => {
         setHasUnsavedChanges(false); 
       } catch (err: any) {
         console.warn("Load failed, possibly new local session", err);
-        createNewBoard();
+        await createNewBoard();
       }
     } else {
-      createNewBoard();
+      await createNewBoard();
     }
     setIsLoading(false);
   };
@@ -876,7 +876,7 @@ const App: React.FC = () => {
                     className="w-full bg-pink-50 rounded-xl px-3 py-2 focus:ring-2 focus:ring-pink-300 outline-none text-gray-800 font-bold text-xs sm:text-sm"
                  />
                  
-                 {createType === 'note' && (
+                 {createType === 'note' ? (
                     <textarea 
                       value={createContent}
                       onChange={(e) => setCreateContent(e.target.value)}
@@ -1034,7 +1034,7 @@ const App: React.FC = () => {
 
        </main>
 
-       <div className="fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-white/90 backdrop-blur-xl border border-white/50 shadow-2xl rounded-full px-8 py-3 z-50 flex items-center gap-10">
+       <div className="fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-white/90 backdrop-blur-xl border border-white/50 shadow-2xl rounded-full px-8 py-3 z-50 flex items-center gap-6 sm:gap-10">
          <button 
            onClick={() => setActiveTab('board')}
            className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'board' ? 'text-rose-500 scale-110' : 'text-gray-400 hover:text-gray-600'}`}
