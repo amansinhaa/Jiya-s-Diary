@@ -73,14 +73,20 @@ const STORAGE_PREFIX = 'jiya_cloud_v1_';
 const getStorageKey = (id: string) => `${STORAGE_PREFIX}${id}`;
 const SIMULATED_DELAY = 100; 
 
+// Helper to remove undefined values because Firestore rejects them
+const sanitizeData = (data: any) => {
+  return JSON.parse(JSON.stringify(data));
+};
+
 // --- PUBLIC API ---
 
 export const createCloudBoard = async (data: any): Promise<string> => {
   const id = 'board_' + Date.now().toString(36);
+  const cleanData = sanitizeData(data);
   
   if (isFirebaseEnabled && db) {
     try {
-      await setDoc(doc(db, "boards", id), data);
+      await setDoc(doc(db, "boards", id), cleanData);
       return id;
     } catch (e) {
       console.warn("Firebase create failed, falling back to local", e);
@@ -89,15 +95,17 @@ export const createCloudBoard = async (data: any): Promise<string> => {
 
   // Local Fallback
   await new Promise(resolve => setTimeout(resolve, SIMULATED_DELAY));
-  localStorage.setItem(getStorageKey(id), JSON.stringify(data));
+  localStorage.setItem(getStorageKey(id), JSON.stringify(cleanData));
   return id;
 };
 
 export const updateCloudBoard = async (id: string, data: any): Promise<void> => {
+  const cleanData = sanitizeData(data);
+
   if (isFirebaseEnabled && db) {
     try {
-      // Optimistic update: Fire and forget mostly, let onSnapshot handle sync back
-      await setDoc(doc(db, "boards", id), data, { merge: true });
+      // Optimistic update
+      await setDoc(doc(db, "boards", id), cleanData, { merge: true });
       return;
     } catch (e) {
       console.warn("Firebase update failed", e);
@@ -107,12 +115,12 @@ export const updateCloudBoard = async (id: string, data: any): Promise<void> => 
 
   // Local Fallback
   await new Promise(resolve => setTimeout(resolve, SIMULATED_DELAY));
-  localStorage.setItem(getStorageKey(id), JSON.stringify(data));
+  localStorage.setItem(getStorageKey(id), JSON.stringify(cleanData));
   
   // Trigger event for cross-tab sync in local mode
   window.dispatchEvent(new StorageEvent('storage', {
     key: getStorageKey(id),
-    newValue: JSON.stringify(data)
+    newValue: JSON.stringify(cleanData)
   }));
 };
 
@@ -147,7 +155,7 @@ export const getCloudBoard = async (id: string): Promise<any> => {
 export const subscribeToBoard = (id: string, onUpdate: (data: any) => void) => {
   if (isFirebaseEnabled && db) {
     const docRef = doc(db, "boards", id);
-    // Real-time listener using onSnapshot as requested
+    // Real-time listener using onSnapshot
     const unsubscribe = onSnapshot(docRef, (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
