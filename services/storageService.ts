@@ -80,8 +80,8 @@ const sanitizeData = (data: any) => {
 
 // --- PUBLIC API ---
 
-export const createCloudBoard = async (data: any): Promise<string> => {
-  const id = 'board_' + Date.now().toString(36);
+export const createCloudBoard = async (data: any, customId?: string): Promise<string> => {
+  const id = customId || ('board_' + Date.now().toString(36));
   const cleanData = sanitizeData(data);
   
   if (isFirebaseEnabled && db) {

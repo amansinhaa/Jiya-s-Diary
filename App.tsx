@@ -10,6 +10,8 @@ import { getBestieAdvice, generateStudyPlan, generateManifestationImage } from '
 import { createCloudBoard, getCloudBoard, updateCloudBoard, uploadMedia, subscribeToBoard, getCurrentConnectionStatus, uploadBase64 } from './services/storageService';
 import ReactMarkdown from 'react-markdown';
 
+const DEFAULT_BOARD_ID = 'board_mjy9gx8m';
+
 const INITIAL_ITEMS: VisionItem[] = [
   { id: '1', type: 'note', content: 'London 2026 🇬🇧\nWalking by the Thames', title: 'Dream Trip', color: 'bg-blue-100', rotation: '-rotate-2', sticker: '✈️', date: 'Summer 2026', scale: 1, fontSize: 'text-xl' },
   { id: '2', type: 'image', content: 'https://images.unsplash.com/photo-1532906619279-a764d89a445d?w=800&q=80', title: 'F1 Race Day 🏎️', rotation: 'rotate-3', scale: 1, sticker: '🏎️' },
@@ -22,6 +24,12 @@ const INITIAL_ITEMS: VisionItem[] = [
   { id: '10', type: 'image', content: 'https://images.unsplash.com/photo-1562774053-701939374585?w=800&q=80', title: 'IIM Bound', rotation: '-rotate-1', scale: 1, sticker: '🎓' },
   { id: '11', type: 'journal', content: 'Today I managed to study for 4 hours straight! It felt amazing to be productive. The CAT prep is intense but I am starting to get the hang of LRDI sets. Manifesting that seat at IIM A! ✨', title: 'Productive Day', date: 'Oct 24, 2025', sticker: '💪', scale: 1 },
 ];
+
+const INITIAL_HEADER = {
+  title: "Jiya's Era ✨",
+  subtitle: "Undergrad • Future CEO • IIM Aspirant",
+  hashtags: ["#LondonCalling", "#F1Girlie", "#Foodie", "#FitFab"]
+};
 
 const STICKERS = [
   '😊', '😂', '🥰', '😍', '😎', '🤓', '🥺', '😭', '😤', '😡', '🤯', '😴',
@@ -49,11 +57,7 @@ const FONT_SIZES = [
 const App: React.FC = () => {
   // --- Persistent State Initialization ---
   const [items, setItems] = useState<VisionItem[]>([]);
-  const [headerConfig, setHeaderConfig] = useState({
-    title: "Jiya's Era ✨",
-    subtitle: "Undergrad • Future CEO • IIM Aspirant",
-    hashtags: ["#LondonCalling", "#F1Girlie", "#Foodie", "#FitFab"]
-  });
+  const [headerConfig, setHeaderConfig] = useState(INITIAL_HEADER);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([{ role: 'model', text: "Hey Jiya! Ready to manifest that 9.5 CGPA and London trip? ✨", timestamp: new Date() }]);
 
   // --- Cloud Sync State ---
@@ -160,14 +164,17 @@ const App: React.FC = () => {
     const params = new URLSearchParams(window.location.search);
     let idFromUrl = params.get('id');
 
+    // Default to the specific board ID if none provided
+    // This ensures sharing the root URL opens Jiya's specific board
     if (!idFromUrl) {
-      idFromUrl = localStorage.getItem('jiya_board_id');
-      if (idFromUrl) updateUrlSafe(idFromUrl);
+      idFromUrl = DEFAULT_BOARD_ID;
+      updateUrlSafe(idFromUrl);
     }
 
     if (idFromUrl) {
       await loadBoardData(idFromUrl);
     } else {
+      // Fallback (unlikely given logic above)
       await createNewBoard();
     }
     setIsLoading(false);
@@ -202,7 +209,24 @@ const App: React.FC = () => {
       } catch (err: any) {
         console.warn("Load failed", err);
         if (err.message === "Board not found") {
-           if (navigator.onLine) {
+           // Self-Healing: If the default board is missing, create it automatically!
+           if (id === DEFAULT_BOARD_ID) {
+              console.log("Default board not found, creating it now...");
+              try {
+                  await createCloudBoard({
+                      items: INITIAL_ITEMS,
+                      headerConfig: INITIAL_HEADER,
+                      chatMessages: [{ role: 'model', text: "Hey Jiya! Ready to manifest that 9.5 CGPA and London trip? ✨", timestamp: new Date() }]
+                  }, DEFAULT_BOARD_ID);
+                  
+                  // Now try loading again immediately
+                  await loadBoardData(DEFAULT_BOARD_ID);
+                  return;
+              } catch (createErr) {
+                  console.error("Failed to auto-create default board", createErr);
+                  setLoadError("Could not initialize Jiya's board.");
+              }
+           } else if (navigator.onLine) {
                await createNewBoard();
            } else {
                setLoadError("You are offline. Could not load shared board.");
@@ -217,8 +241,8 @@ const App: React.FC = () => {
      try {
         const newId = await createCloudBoard({
           items: INITIAL_ITEMS,
-          headerConfig,
-          chatMessages
+          headerConfig: INITIAL_HEADER,
+          chatMessages: [{ role: 'model', text: "Hey Jiya! Ready to manifest that 9.5 CGPA and London trip? ✨", timestamp: new Date() }]
         });
         setItems(INITIAL_ITEMS);
         setBoardId(newId);
