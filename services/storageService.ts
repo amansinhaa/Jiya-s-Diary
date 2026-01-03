@@ -3,17 +3,41 @@ import { getFirestore, doc, getDoc, setDoc } from 'firebase/firestore';
 import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 // --- CONFIGURATION ---
-const firebaseConfig = {
-  apiKey: process.env.FIREBASE_API_KEY,
-  authDomain: process.env.FIREBASE_AUTH_DOMAIN,
-  projectId: process.env.FIREBASE_PROJECT_ID,
-  storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID,
-  appId: process.env.FIREBASE_APP_ID
+const getFirebaseConfig = () => {
+  // 1. Try Environment Variables (Priority)
+  // We check for at least API Key and Project ID to consider it valid
+  if (process.env.FIREBASE_API_KEY && process.env.FIREBASE_PROJECT_ID) {
+    return {
+      apiKey: process.env.FIREBASE_API_KEY,
+      authDomain: process.env.FIREBASE_AUTH_DOMAIN,
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
+      messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID,
+      appId: process.env.FIREBASE_APP_ID
+    };
+  }
+  
+  // 2. Try Local Storage (Manual User Setup for Cross-Device Sync)
+  try {
+    const local = localStorage.getItem('jiya_firebase_config');
+    if (local) return JSON.parse(local);
+  } catch (e) {
+    console.error("Invalid local firebase config", e);
+  }
+
+  // 3. Default Hardcoded Config
+  return {
+    apiKey: "AIzaSyBjN-Bgvd6n9HoAJzKfl4NiAh5nVPgssQw",
+    authDomain: "jiyav-73e4b.firebaseapp.com",
+    projectId: "jiyav-73e4b",
+    storageBucket: "jiyav-73e4b.firebasestorage.app",
+    messagingSenderId: "539444082502",
+    appId: "1:539444082502:web:80fa6b8e31707647ab9747"
+  };
 };
 
-// Check if Firebase is configured
-const isFirebaseEnabled = !!(firebaseConfig.apiKey && firebaseConfig.projectId);
+const firebaseConfig = getFirebaseConfig();
+const isFirebaseEnabled = !!(firebaseConfig?.apiKey && firebaseConfig?.projectId);
 
 let db: any = null;
 let storage: any = null;
@@ -31,6 +55,20 @@ if (isFirebaseEnabled) {
 } else {
   console.log("☁️ Firebase keys missing. Using Local Storage mode.");
 }
+
+// --- CONFIGURATION HELPERS ---
+export const saveFirebaseConfig = (config: any) => {
+  localStorage.setItem('jiya_firebase_config', JSON.stringify(config));
+  window.location.reload(); // Reload to initialize firebase with new keys
+};
+
+export const clearFirebaseConfig = () => {
+  localStorage.removeItem('jiya_firebase_config');
+  window.location.reload();
+};
+
+export const getCurrentConnectionStatus = () => isFirebaseEnabled;
+
 
 // --- LOCAL STORAGE FALLBACKS ---
 const STORAGE_PREFIX = 'jiya_cloud_v1_';
@@ -91,12 +129,8 @@ export const getCloudBoard = async (id: string): Promise<any> => {
       }
     } catch (e: any) {
       // If authentic failure (permission/network), throw. 
-      // If we just enabled firebase but data is in local, we might want to check local?
-      // For now, strict separation. If firebase is on, we expect data there.
       if (e.message === "Board not found") throw e;
       console.warn("Firebase get failed", e);
-      // Optional: Fallback to local if network fails? 
-      // No, that causes "split brain" data. Better to show error.
       throw e;
     }
   }
