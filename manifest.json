@@ -1,0 +1,20 @@
+{
+  "short_name": "JiyaVision",
+  "name": "Jiya's 2026 Vision Board",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/2581/2581100.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/2581/2581100.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#fdf2f8",
+  "background_color": "#fdf2f8"
+}
