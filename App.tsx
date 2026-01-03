@@ -97,8 +97,7 @@ const App: React.FC = () => {
 
   // --- Cloud Sync State ---
   const [boardId, setBoardId] = useState<string | null>(null);
-  const [syncStatus, setSyncStatus] = useState<'local' | 'syncing' | 'synced' | 'error'>('local');
-  const [showShareUrl, setShowShareUrl] = useState(false);
+  const [isDataLoaded, setIsDataLoaded] = useState(false); // Critical for preventing overwrite
   const [saveStatus, setSaveStatus] = useState<string>('');
   const [isUploading, setIsUploading] = useState(false);
 
@@ -149,8 +148,6 @@ const App: React.FC = () => {
   const updateUrlSafe = (id: string) => {
     try {
       const newUrl = `${window.location.pathname}?id=${id}`;
-      // In blob/sandboxed environments, history API might be restricted or throw errors
-      // if the origin is opaque (blob:...). We try-catch to avoid crashing the app.
       window.history.replaceState({ path: newUrl }, '', newUrl);
     } catch (e) {
       console.warn("Could not update URL (likely due to sandbox environment). ID is saved in localStorage.", e);
@@ -172,11 +169,16 @@ const App: React.FC = () => {
       }
 
       if (idFromUrl) {
-        setSyncStatus('syncing');
+        // LOAD EXISTING BOARD
         try {
           const data = await getCloudBoard(idFromUrl);
-          if (data.items && Array.isArray(data.items)) setItems(data.items);
-          if (data.headerConfig) setHeaderConfig(data.headerConfig);
+          
+          if (data.items && Array.isArray(data.items)) {
+              setItems(data.items);
+          }
+          if (data.headerConfig) {
+              setHeaderConfig(data.headerConfig);
+          }
           if (data.chatMessages) {
              const fixedMessages = data.chatMessages.map((msg: any) => ({
                ...msg,
@@ -184,18 +186,20 @@ const App: React.FC = () => {
              }));
              setChatMessages(fixedMessages);
           }
+          
           setBoardId(idFromUrl);
           localStorage.setItem('jiya_board_id', idFromUrl);
-          setSyncStatus('synced');
+          // CRITICAL: Only mark loaded AFTER setting state from cloud
+          setIsDataLoaded(true); 
+          
         } catch (err) {
           console.error("Failed to load cloud board", err);
-          setSyncStatus('error');
-          // Silently fail to local mode if fetch fails, but don't alert to avoid annoyance
+          // In case of error, we don't set boardId, preventing overwrite of cloud data
+          // User will see local cache (initialized in useState)
         }
       } else {
-        // AUTOMATICALLY GO LIVE: Create a board if one doesn't exist
+        // CREATE NEW BOARD (AUTOMATICALLY GO LIVE)
         try {
-          // Use the initial state values for creation
           const newId = await createCloudBoard({
             items,
             headerConfig,
@@ -204,7 +208,7 @@ const App: React.FC = () => {
           setBoardId(newId);
           localStorage.setItem('jiya_board_id', newId);
           updateUrlSafe(newId);
-          setSyncStatus('synced');
+          setIsDataLoaded(true); // Sync is safe now
         } catch (e) {
           console.error("Auto-sync creation failed", e);
         }
@@ -222,8 +226,9 @@ const App: React.FC = () => {
     localStorage.setItem('jiya_chat_history', JSON.stringify(chatMessages));
 
     // 2. Cloud Auto-Save Logic (Debounced)
-    if (boardId) {
-      setSyncStatus('syncing');
+    // Only run if we have a boardId AND data has been successfully loaded/initialized
+    // This prevents overwriting cloud data with initial local state during loading
+    if (boardId && isDataLoaded) {
       setSaveStatus('Saving...');
       
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
@@ -235,17 +240,15 @@ const App: React.FC = () => {
             headerConfig,
             chatMessages
           });
-          setSyncStatus('synced');
           setSaveStatus('Saved');
           setTimeout(() => setSaveStatus(''), 2000);
         } catch (error) {
           console.error("Auto-save failed", error);
-          setSyncStatus('error');
           setSaveStatus('Save Failed!');
         }
       }, 1500); // 1.5s debounce
     }
-  }, [items, headerConfig, chatMessages, boardId]);
+  }, [items, headerConfig, chatMessages, boardId, isDataLoaded]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -487,35 +490,6 @@ const App: React.FC = () => {
           <div className="absolute -bottom-8 left-20 w-72 h-72 bg-yellow-300 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-blob animation-delay-4000"></div>
        </div>
 
-       {/* Share URL Modal */}
-       {showShareUrl && (
-         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fadeIn">
-           <div className="bg-white rounded-3xl p-6 max-w-sm w-full shadow-2xl text-center">
-             <div className="w-16 h-16 bg-green-100 text-green-500 rounded-full flex items-center justify-center mx-auto mb-4 text-3xl">
-               <i className="fas fa-check"></i>
-             </div>
-             <h3 className="text-2xl font-bold text-gray-800 mb-2">You're Live! 🌐</h3>
-             <p className="text-gray-600 mb-4 text-sm">
-               Open this link on any device to see and edit your board instantly.
-             </p>
-             <div className="bg-gray-100 p-3 rounded-xl mb-4 break-all text-xs font-mono text-gray-500 border border-gray-200">
-               {window.location.href}
-             </div>
-             <button 
-               onClick={() => {
-                 navigator.clipboard.writeText(window.location.href);
-                 alert("Link copied!");
-                 setShowShareUrl(false);
-               }}
-               className="w-full bg-rose-500 text-white py-3 rounded-xl font-bold mb-2 shadow-lg"
-             >
-               Copy Link
-             </button>
-             <button onClick={() => setShowShareUrl(false)} className="text-gray-400 font-bold text-sm">Close</button>
-           </div>
-         </div>
-       )}
-
        {/* Modals */}
        {editingItem && (
          <EditModal 
@@ -550,7 +524,7 @@ const App: React.FC = () => {
          <SettingsModal onClose={() => setShowSettingsModal(false)} />
        )}
 
-       {/* Header - Compacted for Mobile */}
+       {/* Header - Compacted for Mobile & Cleaned Up */}
        <header className="relative z-10 p-4 sm:p-6 text-center group cursor-pointer" onClick={() => !isRearranging && setIsEditingHeader(true)}>
          <div className="relative inline-block">
             <h1 className="text-3xl sm:text-5xl font-handwriting text-rose-600 drop-shadow-sm floating">
@@ -650,9 +624,6 @@ const App: React.FC = () => {
 
               {/* Footer Actions (Install, Sync & Rearrange) */}
               <div className="mt-12 mb-20 text-center space-y-4">
-                
-                {/* Sync Banner REMOVED here per user request */}
-
                 <div className="inline-flex items-center gap-4 sm:gap-6 bg-white/60 backdrop-blur-sm px-4 sm:px-6 py-3 rounded-full shadow-sm border border-white/50">
                    <button 
                      onClick={handleInstallClick}
