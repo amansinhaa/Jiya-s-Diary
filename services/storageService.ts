@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getFirestore, doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
-import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { getStorage, ref, uploadBytes, getDownloadURL, uploadString } from 'firebase/storage';
 
 // --- CONFIGURATION ---
 const getFirebaseConfig = () => {
@@ -191,4 +191,27 @@ export const uploadMedia = async (file: File): Promise<string> => {
     reader.onerror = () => reject(new Error("Failed to process image"));
     reader.readAsDataURL(file);
   });
+};
+
+export const uploadBase64 = async (base64String: string): Promise<string> => {
+  if (isFirebaseEnabled && storage) {
+    try {
+      // Create a unique filename
+      const fileName = `generated/${Date.now()}_${Math.random().toString(36).substr(2, 9)}.png`;
+      const storageRef = ref(storage, fileName);
+      
+      // Upload the base64 string
+      await uploadString(storageRef, base64String, 'data_url');
+      
+      // Get the URL
+      const downloadURL = await getDownloadURL(storageRef);
+      return downloadURL;
+    } catch (e) {
+      console.error("Firebase Storage upload base64 failed", e);
+      // If upload fails, return the original base64 but warn
+      console.warn("Returning large base64 string, this might fail Firestore save.");
+      return base64String;
+    }
+  }
+  return base64String;
 };

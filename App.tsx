@@ -7,7 +7,7 @@ import HeaderEditModal from './components/HeaderEditModal';
 import DataManagementModal from './components/DataManagementModal';
 import SettingsModal from './components/SettingsModal';
 import { getBestieAdvice, generateStudyPlan, generateManifestationImage } from './services/geminiService';
-import { createCloudBoard, getCloudBoard, updateCloudBoard, uploadMedia, subscribeToBoard, getCurrentConnectionStatus } from './services/storageService';
+import { createCloudBoard, getCloudBoard, updateCloudBoard, uploadMedia, subscribeToBoard, getCurrentConnectionStatus, uploadBase64 } from './services/storageService';
 import ReactMarkdown from 'react-markdown';
 
 const INITIAL_ITEMS: VisionItem[] = [
@@ -320,7 +320,7 @@ const App: React.FC = () => {
       } catch (e) {
           console.error(e);
           setSaveStatus('Retry');
-          alert("Save failed. Please check your internet connection.");
+          alert("Save failed. The board might be too large or connection is unstable.");
       }
   };
 
@@ -340,13 +340,26 @@ const App: React.FC = () => {
     }
   };
 
-  const handleAddItem = () => {
+  const handleAddItem = async () => {
     if (!createContent.trim()) return;
+    
+    // Check if content is a large base64 string and upload it to Storage
+    let finalContent = createContent;
+    if (createContent.startsWith('data:image')) {
+        setIsUploading(true);
+        try {
+            finalContent = await uploadBase64(createContent);
+        } catch (e) {
+            console.error("Failed to upload generated image", e);
+        } finally {
+            setIsUploading(false);
+        }
+    }
 
     const newItem: VisionItem = {
       id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
       type: createType,
-      content: createContent,
+      content: finalContent,
       title: createTitle || (createType === 'image' ? 'Vibes' : 'Untitled'),
       date: createDate,
       sticker: createSticker,
@@ -849,63 +862,6 @@ const App: React.FC = () => {
                       </div>
                    </div>
                  ))}
-               </div>
-            </div>
-          )}
-
-          {activeTab === 'chat' && (
-            <div className="max-w-2xl mx-auto bg-white/80 backdrop-blur-md rounded-3xl shadow-xl border border-white h-[70vh] flex flex-col overflow-hidden">
-               <div className="bg-gradient-to-r from-pink-400 to-rose-400 p-4 text-white flex items-center gap-3">
-                 <div className="bg-white p-2 rounded-full text-pink-500">
-                    <i className="fas fa-sparkles"></i>
-                 </div>
-                 <div>
-                   <h2 className="font-bold">Bestie AI</h2>
-                   <p className="text-xs opacity-90">Always here to hype you up</p>
-                 </div>
-               </div>
-               
-               <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                 {chatMessages.map((msg, idx) => (
-                   <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                     <div className={`max-w-[80%] p-4 rounded-2xl text-sm leading-relaxed ${
-                       msg.role === 'user' 
-                         ? 'bg-rose-500 text-white rounded-br-none' 
-                         : 'bg-white shadow-sm text-gray-800 rounded-bl-none border border-pink-100'
-                     }`}>
-                       <ReactMarkdown>{msg.text}</ReactMarkdown>
-                     </div>
-                   </div>
-                 ))}
-                 {isTyping && (
-                   <div className="flex justify-start">
-                     <div className="bg-white p-3 rounded-2xl rounded-bl-none shadow-sm flex gap-1">
-                       <span className="w-2 h-2 bg-pink-400 rounded-full animate-bounce"></span>
-                       <span className="w-2 h-2 bg-pink-400 rounded-full animate-bounce delay-100"></span>
-                       <span className="w-2 h-2 bg-pink-400 rounded-full animate-bounce delay-200"></span>
-                     </div>
-                   </div>
-                 )}
-                 <div ref={chatEndRef} />
-               </div>
-
-               <div className="p-4 bg-white border-t border-pink-100">
-                 <div className="flex gap-2">
-                   <input 
-                     type="text" 
-                     value={userInput}
-                     onChange={(e) => setUserInput(e.target.value)}
-                     onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
-                     placeholder="Vent, ask for a study plan, or just chat..."
-                     className="flex-1 bg-pink-50 border-none rounded-full px-6 py-3 focus:ring-2 focus:ring-pink-300 outline-none text-gray-700"
-                   />
-                   <button 
-                     onClick={handleSendMessage}
-                     className="bg-rose-500 hover:bg-rose-600 text-white w-12 h-12 rounded-full flex items-center justify-center transition-colors shadow-lg"
-                   >
-                     <i className="fas fa-paper-plane"></i>
-                   </button>
-                 </div>
                </div>
             </div>
           )}
