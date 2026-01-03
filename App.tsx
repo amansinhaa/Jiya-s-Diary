@@ -143,10 +143,9 @@ const App: React.FC = () => {
       if (idFromUrl) updateUrlSafe(idFromUrl);
     }
 
+    // Attempt to load board
     if (idFromUrl) {
       try {
-        if (!navigator.onLine) throw new Error("No Internet Connection");
-
         const data = await getCloudBoard(idFromUrl);
         if (data.items && Array.isArray(data.items)) setItems(data.items);
         if (data.headerConfig) setHeaderConfig(data.headerConfig);
@@ -160,19 +159,20 @@ const App: React.FC = () => {
         setBoardId(idFromUrl);
         localStorage.setItem('jiya_board_id', idFromUrl);
         setIsDataLoaded(true);
-        setHasUnsavedChanges(false); // Clean state from cloud
+        setHasUnsavedChanges(false); 
       } catch (err: any) {
-        console.error("Cloud load failed:", err);
-        setLoadError(err.message || "Failed to sync with cloud.");
-        // DO NOT fallback to local storage automatically to avoid overwriting cloud with stale local data
-        if (err.message === 'Board not found') {
-            // Only if strictly not found, we might treat as new, but let's ask user or just show error for safety
-            setLoadError("Board not found. Check ID or create new.");
-        }
+        console.warn("Load failed, possibly new local session", err);
+        // Fallback silently to creating a new one if not found or local storage wiped
+        createNewBoard();
       }
     } else {
-      // CREATE NEW BOARD
-      try {
+      createNewBoard();
+    }
+    setIsLoading(false);
+  };
+
+  const createNewBoard = async () => {
+     try {
         const newId = await createCloudBoard({
           items: INITIAL_ITEMS,
           headerConfig,
@@ -186,32 +186,50 @@ const App: React.FC = () => {
         setHasUnsavedChanges(false);
       } catch (e) {
         console.error("Creation failed", e);
-        setLoadError("Could not create new board. Check connection.");
+        setLoadError("Could not initialize app.");
       }
-    }
-    setIsLoading(false);
   };
 
   useEffect(() => {
     initApp();
   }, []);
 
-  // --- Polling for Real-Time Updates ---
+  // --- Polling & Cross-Tab Sync ---
   useEffect(() => {
     if (!boardId || !isDataLoaded) return;
 
+    // 1. Storage Event Listener (Instant Sync across Tabs)
+    const handleStorageChange = (e: StorageEvent) => {
+      // If our board data changed in another tab, update here
+      if (e.key && e.key.includes(boardId)) {
+         try {
+           const newData = JSON.parse(e.newValue || '{}');
+           if (newData.items) setItems(newData.items);
+           if (newData.headerConfig) setHeaderConfig(newData.headerConfig);
+           if (newData.chatMessages) {
+              const fixedMessages = newData.chatMessages.map((msg: any) => ({
+                  ...msg,
+                  timestamp: new Date(msg.timestamp)
+              }));
+              setChatMessages(fixedMessages);
+           }
+         } catch (err) {
+           console.error("Sync parse error", err);
+         }
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
+
+    // 2. Poll Interval (For single tab consistency check)
     const pollInterval = setInterval(async () => {
-      // Don't poll if interacting, or if user has pending unsaved changes (priority to user)
-      if (!navigator.onLine || isInteracting || hasUnsavedChanges || editingItem || showNewJournalForm) return;
+      if (isInteracting || hasUnsavedChanges || editingItem || showNewJournalForm) return;
 
       try {
         const cloudData = await getCloudBoard(boardId);
-        
         const currentDataStr = JSON.stringify({ items: itemsRef.current, headerConfig: headerRef.current });
         const cloudDataStr = JSON.stringify({ items: cloudData.items, headerConfig: cloudData.headerConfig });
 
         if (currentDataStr !== cloudDataStr) {
-           console.log("🔄 Detected changes on cloud, syncing...");
            if (cloudData.items && Array.isArray(cloudData.items)) setItems(cloudData.items);
            if (cloudData.headerConfig) setHeaderConfig(cloudData.headerConfig);
            if (cloudData.chatMessages && cloudData.chatMessages.length !== chatRef.current.length) {
@@ -225,27 +243,23 @@ const App: React.FC = () => {
       } catch (e) {
         // Silent catch
       }
-    }, 2000); // 2 seconds poll
+    }, 1000); // 1s polling for local storage is cheap
 
-    return () => clearInterval(pollInterval);
+    return () => {
+       clearInterval(pollInterval);
+       window.removeEventListener('storage', handleStorageChange);
+    };
   }, [boardId, isDataLoaded, isInteracting, hasUnsavedChanges, editingItem, showNewJournalForm]);
 
 
-  // --- Persistence & Auto Save Effects ---
+  // --- Auto Save Effects ---
   useEffect(() => {
-    // Local backup logic (just for offline safety, not for initial load logic anymore)
-    if (items.length > 0) localStorage.setItem('jiya_vision_items', JSON.stringify(items));
-    localStorage.setItem('jiya_header_config', JSON.stringify(headerConfig));
-    localStorage.setItem('jiya_chat_history', JSON.stringify(chatMessages));
-
-    // Cloud Save - Only if we have unsaved changes and are loaded
     if (boardId && isDataLoaded && hasUnsavedChanges) {
       setSaveStatus('Saving...');
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
 
       saveTimeoutRef.current = setTimeout(async () => {
         try {
-          if (navigator.onLine) {
             await updateCloudBoard(boardId, {
                 items,
                 headerConfig,
@@ -253,86 +267,20 @@ const App: React.FC = () => {
                 lastUpdated: Date.now()
             });
             setSaveStatus('Saved');
-            setHasUnsavedChanges(false); // Clean state
+            setHasUnsavedChanges(false); 
             setTimeout(() => setSaveStatus(''), 2000);
-          } else {
-             setSaveStatus('Offline');
-          }
         } catch (error) {
           console.error("Auto-save failed", error);
           setSaveStatus('Retry');
         }
-      }, 1000); 
+      }, 800); 
     }
   }, [items, headerConfig, chatMessages, boardId, isDataLoaded, hasUnsavedChanges]);
 
   // --- Handlers that trigger "Dirty" state ---
   const markDirty = () => setHasUnsavedChanges(true);
 
-  // --- Reconnection Logic ---
-  useEffect(() => {
-    const handleOnline = () => {
-        console.log("Back online!");
-        if (boardId && isDataLoaded && hasUnsavedChanges) {
-             setSaveStatus('Syncing...');
-             // Effect will trigger save due to hasUnsavedChanges
-        } else if (boardId && isDataLoaded && !hasUnsavedChanges) {
-             // Force a poll
-             getCloudBoard(boardId).then(data => {
-                if (data.items) setItems(data.items);
-             });
-        }
-    };
-    window.addEventListener('online', handleOnline);
-    return () => window.removeEventListener('online', handleOnline);
-  }, [boardId, isDataLoaded, hasUnsavedChanges]);
-
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatMessages]);
-
-  useEffect(() => {
-    const handleBeforeInstallPrompt = (e: Event) => {
-      e.preventDefault();
-      setInstallPrompt(e);
-    };
-
-    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-
-    return () => {
-      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-    };
-  }, []);
-
   // --- Handlers ---
-
-  const handleInstallClick = () => {
-    if (!installPrompt) {
-      alert("To install, use your browser's 'Add to Home Screen' or 'Install App' option!");
-      return;
-    }
-    installPrompt.prompt();
-    installPrompt.userChoice.then((choiceResult: any) => {
-      if (choiceResult.outcome === 'accepted') {
-        console.log('User accepted the install prompt');
-      }
-      setInstallPrompt(null);
-    });
-  };
-
-  const handleRestoreData = (data: any) => {
-    if (data.items) setItems(data.items);
-    if (data.headerConfig) setHeaderConfig(data.headerConfig);
-    if (data.chatMessages) {
-       const fixedMessages = data.chatMessages.map((msg: any) => ({
-         ...msg,
-         timestamp: new Date(msg.timestamp)
-       }));
-       setChatMessages(fixedMessages);
-    }
-    markDirty(); // Importing data counts as a change
-    alert('Vision Board Restored Successfully! ✨');
-  };
 
   const handleUpdateItem = (updatedItem: VisionItem) => {
     setItems(prev => prev.map(item => item.id === updatedItem.id ? updatedItem : item));
@@ -376,35 +324,18 @@ const App: React.FC = () => {
     markDirty();
   };
 
-  // --- Drag and Drop Logic ---
-
-  const handleDragStart = (e: React.DragEvent, index: number) => {
-    setIsInteracting(true); 
-    setDraggedItemIndex(index);
-    e.dataTransfer.effectAllowed = "move";
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault(); 
-    e.dataTransfer.dropEffect = "move";
-  };
-
-  const handleDrop = (e: React.DragEvent, targetIndex: number) => {
-    e.preventDefault();
-    setIsInteracting(false); 
-    if (draggedItemIndex === null || draggedItemIndex === targetIndex) return;
-
-    const boardItems = items.filter(i => i.type !== 'journal');
-    const draggedItem = boardItems[draggedItemIndex];
-    const targetItem = boardItems[targetIndex];
-    let newItems = [...items];
-    const realDragIndex = newItems.findIndex(i => i.id === draggedItem.id);
-    const currentTargetIndex = newItems.findIndex(i => i.id === targetItem.id);
-    newItems.splice(realDragIndex, 1);
-    newItems.splice(currentTargetIndex, 0, draggedItem);
-    setItems(newItems);
-    setDraggedItemIndex(null);
-    markDirty();
+  const handleRestoreData = (data: any) => {
+    if (data.items) setItems(data.items);
+    if (data.headerConfig) setHeaderConfig(data.headerConfig);
+    if (data.chatMessages) {
+       const fixedMessages = data.chatMessages.map((msg: any) => ({
+         ...msg,
+         timestamp: new Date(msg.timestamp)
+       }));
+       setChatMessages(fixedMessages);
+    }
+    markDirty(); 
+    alert('Vision Board Restored Successfully! ✨');
   };
 
   const handleImageUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -416,37 +347,7 @@ const App: React.FC = () => {
         setCreateContent(uploadedUrl);
       } catch (err: any) {
         console.error("Upload failed", err);
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            const img = new Image();
-            img.onload = () => {
-              const canvas = document.createElement('canvas');
-              let width = img.width;
-              let height = img.height;
-              const MAX_SIZE = 800;
-              if (width > height) {
-                if (width > MAX_SIZE) {
-                  height *= MAX_SIZE / width;
-                  width = MAX_SIZE;
-                }
-              } else {
-                if (height > MAX_SIZE) {
-                  width *= MAX_SIZE / height;
-                  height = MAX_SIZE;
-                }
-              }
-              canvas.width = width;
-              canvas.height = height;
-              const ctx = canvas.getContext('2d');
-              ctx?.drawImage(img, 0, 0, width, height);
-              const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
-              setCreateContent(dataUrl);
-              alert("⚠️ Cloud Upload Failed. Saved locally for now.");
-            };
-            img.src = e.target?.result as string;
-        };
-        reader.readAsDataURL(file);
-
+        alert("Image upload failed: " + err.message);
       } finally {
         setIsUploading(false);
         if (fileInputRef.current) fileInputRef.current.value = '';
@@ -460,7 +361,7 @@ const App: React.FC = () => {
     setChatMessages(prev => [...prev, newMsg]);
     setUserInput('');
     setIsTyping(true);
-    markDirty(); // Chat updates are changes too
+    markDirty(); 
     try {
       const lowerInput = newMsg.text.toLowerCase();
       let responseText = "";
@@ -516,47 +417,58 @@ const App: React.FC = () => {
     setTimeout(() => setIsInteracting(false), 2000);
   };
 
+  const handleInstallClick = () => {
+    if (!installPrompt) {
+      alert("To install, use your browser's 'Add to Home Screen' or 'Install App' option!");
+      return;
+    }
+    installPrompt.prompt();
+    installPrompt.userChoice.then((choiceResult: any) => {
+      setInstallPrompt(null);
+    });
+  };
+
+  // --- Drag and Drop Logic ---
+
+  const handleDragStart = (e: React.DragEvent, index: number) => {
+    setIsInteracting(true); 
+    setDraggedItemIndex(index);
+    e.dataTransfer.effectAllowed = "move";
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault(); 
+    e.dataTransfer.dropEffect = "move";
+  };
+
+  const handleDrop = (e: React.DragEvent, targetIndex: number) => {
+    e.preventDefault();
+    setIsInteracting(false); 
+    if (draggedItemIndex === null || draggedItemIndex === targetIndex) return;
+
+    const boardItems = items.filter(i => i.type !== 'journal');
+    const draggedItem = boardItems[draggedItemIndex];
+    const targetItem = boardItems[targetIndex];
+    let newItems = [...items];
+    const realDragIndex = newItems.findIndex(i => i.id === draggedItem.id);
+    const currentTargetIndex = newItems.findIndex(i => i.id === targetItem.id);
+    newItems.splice(realDragIndex, 1);
+    newItems.splice(currentTargetIndex, 0, draggedItem);
+    setItems(newItems);
+    setDraggedItemIndex(null);
+    markDirty();
+  };
+
   if (isLoading) {
     return (
       <div className="min-h-screen bg-[#fdf2f8] flex flex-col items-center justify-center p-4">
         <div className="text-6xl mb-4 animate-bounce">✨</div>
         <h1 className="text-2xl font-handwriting text-rose-500 mb-2">Syncing your Vision...</h1>
-        <p className="text-gray-400 text-sm">Getting the latest dreams from the cloud</p>
       </div>
     );
   }
 
-  if (loadError) {
-    return (
-      <div className="min-h-screen bg-[#fdf2f8] flex flex-col items-center justify-center p-4 text-center">
-        <div className="bg-white p-8 rounded-3xl shadow-xl border border-red-100 max-w-sm">
-            <i className="fas fa-cloud-rain text-4xl text-gray-300 mb-4"></i>
-            <h2 className="text-xl font-bold text-gray-800 mb-2">Sync Failed</h2>
-            <p className="text-gray-600 mb-6 text-sm">{loadError}</p>
-            <button 
-                onClick={() => window.location.reload()}
-                className="w-full py-3 bg-rose-500 text-white rounded-xl font-bold hover:bg-rose-600 shadow-lg"
-            >
-                Try Again
-            </button>
-            <button 
-                onClick={() => {
-                   // Force local fallback manually if user insists
-                   const savedItems = localStorage.getItem('jiya_vision_items');
-                   if (savedItems) setItems(JSON.parse(savedItems));
-                   else setItems(INITIAL_ITEMS);
-                   setIsDataLoaded(true);
-                   setLoadError('');
-                   markDirty(); // Mark dirty so it resyncs eventually
-                }}
-                className="mt-4 text-xs text-gray-400 underline hover:text-gray-600"
-            >
-                Use Offline Version (May be old)
-            </button>
-        </div>
-      </div>
-    );
-  }
+  // Error screen is removed as we fallback to local now.
 
   return (
     <div className="min-h-screen pb-24 relative overflow-hidden bg-[#fdf2f8]">
@@ -566,10 +478,9 @@ const App: React.FC = () => {
           <div className="absolute -bottom-8 left-20 w-72 h-72 bg-yellow-300 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-blob animation-delay-4000"></div>
        </div>
        
-       {/* Sync Status Indicator */}
        {saveStatus && (
          <div className="fixed top-4 right-4 z-50 bg-white/80 backdrop-blur-md px-3 py-1.5 rounded-full shadow-sm border border-gray-100 flex items-center gap-2">
-            <span className={`w-2 h-2 rounded-full ${saveStatus === 'Saved' || saveStatus === 'Synced' ? 'bg-green-400' : saveStatus === 'Saving...' ? 'bg-yellow-400' : 'bg-red-400'}`}></span>
+            <span className={`w-2 h-2 rounded-full ${saveStatus === 'Saved' ? 'bg-green-400' : saveStatus === 'Saving...' ? 'bg-yellow-400' : 'bg-blue-400'}`}></span>
             <span className="text-[10px] font-bold uppercase text-gray-500">{saveStatus}</span>
          </div>
        )}
