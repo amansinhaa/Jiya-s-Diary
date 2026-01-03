@@ -673,11 +673,11 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen pb-24 relative overflow-hidden bg-[#fdf2f8]">
-       {/* Ambient blobs */}
+       {/* Ambient blobs - Adjusted for screenshot match */}
        <div className="fixed top-0 left-0 w-full h-full pointer-events-none z-0">
-          <div className="absolute top-10 left-10 w-64 h-64 bg-pink-300 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-blob"></div>
-          <div className="absolute top-0 right-10 w-72 h-72 bg-purple-300 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-blob animation-delay-2000"></div>
-          <div className="absolute -bottom-8 left-20 w-72 h-72 bg-yellow-300 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-blob animation-delay-4000"></div>
+          <div className="absolute top-20 left-10 w-72 h-72 bg-pink-200 rounded-full mix-blend-multiply filter blur-3xl opacity-40 animate-blob"></div>
+          <div className="absolute top-10 right-0 w-96 h-96 bg-purple-200 rounded-full mix-blend-multiply filter blur-3xl opacity-40 animate-blob animation-delay-2000"></div>
+          <div className="absolute bottom-20 -left-10 w-80 h-80 bg-yellow-100 rounded-full mix-blend-multiply filter blur-3xl opacity-50 animate-blob animation-delay-4000"></div>
        </div>
        
        {/* Connection Status & Save Indicator */}
@@ -764,13 +764,13 @@ const App: React.FC = () => {
        <main className="relative z-10 max-w-7xl mx-auto px-4">
           
           {activeTab === 'board' && (
-            <div className="pb-20 mt-2">
+            <div className="pb-32 mt-2">
               {Array.isArray(items) && (
-                <div className="columns-2 sm:columns-2 lg:columns-3 xl:columns-4 gap-6 space-y-6 mx-auto">
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6 mx-auto items-start">
                   {items.filter(i => i.type !== 'journal').map((item, index) => (
                     <div 
                       key={item.id} 
-                      className={`break-inside-avoid inline-block w-full transition-all duration-200 
+                      className={`relative w-full transition-all duration-200 
                         ${isRearranging ? 'cursor-move hover:opacity-90' : ''} 
                         ${isRearranging && dragOverIndex === index ? 'scale-105 opacity-50' : ''}
                       `}
@@ -840,7 +840,7 @@ const App: React.FC = () => {
                 </div>
               )}
 
-              <div className="mt-12 mb-20 text-center space-y-4">
+              <div className="mt-12 text-center space-y-4">
                 <div className="inline-flex items-center gap-4 sm:gap-6 bg-white/60 backdrop-blur-sm px-4 sm:px-6 py-3 rounded-full shadow-sm border border-white/50">
                    <button 
                      onClick={handleInstallClick}
@@ -867,13 +867,9 @@ const App: React.FC = () => {
                      <i className="fas fa-cog"></i>
                    </button>
                 </div>
-                {isRearranging ? (
+                {isRearranging && (
                    <p className="text-rose-500 font-handwriting mt-4 text-sm font-bold animate-pulse">
                      Drag to move • Tap X to delete • Tap pencil to edit
-                   </p>
-                ) : (
-                   <p className="text-gray-400 font-handwriting mt-4 text-sm opacity-60">
-                      Manifesting your dreams, one pixel at a time ✨
                    </p>
                 )}
               </div>
@@ -1211,29 +1207,44 @@ const App: React.FC = () => {
 
        </main>
 
-       <div className="fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-white/90 backdrop-blur-xl border border-white/50 shadow-2xl rounded-full px-8 py-3 z-50 flex items-center gap-6 sm:gap-10">
-         <button 
-           onClick={() => setActiveTab('board')}
-           className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'board' ? 'text-rose-500 scale-110' : 'text-gray-400 hover:text-gray-600'}`}
-         >
-           <i className="fas fa-th-large text-xl"></i>
-           <span className="text-[10px] font-bold uppercase">Vision</span>
-         </button>
-         
-         <button 
-            onClick={() => setActiveTab('create')}
-            className={`bg-rose-500 text-white w-14 h-14 rounded-full flex items-center justify-center -mt-8 shadow-lg hover:bg-rose-600 transition-transform hover:scale-110 ${activeTab === 'create' ? 'ring-4 ring-pink-200' : ''}`}
-         >
-           <i className="fas fa-plus text-2xl"></i>
-         </button>
+       {/* New Footer Navigation */}
+       <div className="fixed bottom-6 left-1/2 transform -translate-x-1/2 z-50 flex flex-col items-center w-full pointer-events-none">
+          <div className="bg-white/80 backdrop-blur-xl border border-white/60 shadow-2xl rounded-[2rem] px-8 py-3 flex items-center gap-16 relative pointer-events-auto">
+             
+             {/* Left: Vision */}
+             <button 
+               onClick={() => setActiveTab('board')}
+               className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'board' ? 'text-rose-500' : 'text-gray-400 hover:text-gray-600'}`}
+             >
+               <div className={`p-1.5 rounded-xl ${activeTab === 'board' ? 'bg-rose-50' : ''}`}>
+                 <i className="fas fa-th-large text-lg"></i>
+               </div>
+               <span className="text-[9px] font-bold tracking-widest uppercase">Vision</span>
+             </button>
 
-         <button 
-           onClick={() => setActiveTab('journal')}
-           className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'journal' ? 'text-rose-500 scale-110' : 'text-gray-400 hover:text-gray-600'}`}
-         >
-           <i className="fas fa-book text-xl"></i>
-           <span className="text-[10px] font-bold uppercase">Journal</span>
-         </button>
+             {/* Right: Journal */}
+             <button 
+               onClick={() => setActiveTab('journal')}
+               className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'journal' ? 'text-rose-500' : 'text-gray-400 hover:text-gray-600'}`}
+             >
+               <div className={`p-1.5 rounded-xl ${activeTab === 'journal' ? 'bg-rose-50' : ''}`}>
+                 <i className="fas fa-book text-lg"></i>
+               </div>
+               <span className="text-[9px] font-bold tracking-widest uppercase">Journal</span>
+             </button>
+
+             {/* Center: Create Button (Absolute) */}
+             <button 
+                onClick={() => setActiveTab('create')}
+                className="absolute left-1/2 -top-6 transform -translate-x-1/2 bg-rose-500 text-white w-14 h-14 rounded-full flex items-center justify-center shadow-lg shadow-rose-200 hover:bg-rose-600 transition-transform hover:scale-110 active:scale-95 border-4 border-[#fdf2f8]"
+             >
+               <i className="fas fa-plus text-2xl"></i>
+             </button>
+          </div>
+          
+          <p className="text-gray-400/80 font-handwriting text-[10px] mt-3 font-medium pointer-events-auto">
+            Manifesting your dreams, one pixel at a time ✨
+          </p>
        </div>
 
     </div>
