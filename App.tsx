@@ -66,11 +66,25 @@ const App: React.FC = () => {
   
   // Ref for interaction state to use in event listeners without re-triggering effects
   const isInteractingRef = useRef(false);
+  const interactionTimeoutRef = useRef<any>(null);
   const [isInteractingState, setIsInteractingState] = useState(false); // For UI rendering
   
   const setInteracting = (val: boolean) => {
       isInteractingRef.current = val;
       setIsInteractingState(val);
+
+      // Clear existing timeout
+      if (interactionTimeoutRef.current) clearTimeout(interactionTimeoutRef.current);
+
+      if (val) {
+          // Safety valve: Auto-release interaction lock after 5 seconds of inactivity
+          // This is critical for mobile where drag events might get stuck
+          interactionTimeoutRef.current = setTimeout(() => {
+              console.log("Auto-releasing stuck interaction lock");
+              isInteractingRef.current = false;
+              setIsInteractingState(false);
+          }, 5000);
+      }
   };
   
   const [isCloudConnected, setIsCloudConnected] = useState(false);
@@ -152,8 +166,16 @@ const App: React.FC = () => {
     }
 
     if (idFromUrl) {
+      await loadBoardData(idFromUrl);
+    } else {
+      await createNewBoard();
+    }
+    setIsLoading(false);
+  };
+
+  const loadBoardData = async (id: string) => {
       try {
-        const data = await getCloudBoard(idFromUrl);
+        const data = await getCloudBoard(id);
         
         // Filter out the "Do it tired" note if it exists in data, per user request
         let loadedItems = data.items || [];
@@ -172,8 +194,9 @@ const App: React.FC = () => {
             }));
             setChatMessages(fixedMessages);
         }
-        setBoardId(idFromUrl);
-        localStorage.setItem('jiya_board_id', idFromUrl);
+        setBoardId(id);
+        localStorage.setItem('jiya_board_id', id);
+        updateUrlSafe(id);
         setIsDataLoaded(true);
         setHasUnsavedChanges(false); 
       } catch (err: any) {
@@ -188,11 +211,7 @@ const App: React.FC = () => {
            setLoadError("Could not load board. Please check connection.");
         }
       }
-    } else {
-      await createNewBoard();
-    }
-    setIsLoading(false);
-  };
+  }
 
   const createNewBoard = async () => {
      try {
@@ -238,6 +257,9 @@ const App: React.FC = () => {
          incomingItems = incomingItems.filter((i: VisionItem) => !i.content.includes("Do it tired.\nDo it sad.\nJust do it."));
       }
 
+      // Check for changes before setting state to avoid loops
+      // Simplified check: just check length or basic ID diff if needed, 
+      // but React state updates handle identity checks well enough for this.
       if (incomingItems) setItems(incomingItems);
       if (newData.headerConfig) setHeaderConfig(newData.headerConfig);
       if (newData.chatMessages) {
@@ -248,6 +270,25 @@ const App: React.FC = () => {
          setChatMessages(fixedMessages);
       }
     });
+
+    // --- Visibility Listener (Smart Wake-Up) ---
+    // Force a re-fetch when user switches back to this tab/app on mobile
+    const handleVisibilityChange = () => {
+        if (document.visibilityState === 'visible' && boardId) {
+            console.log("App active, forcing refresh...");
+            getCloudBoard(boardId).then((data) => {
+                 let loadedItems = data.items || [];
+                 if (Array.isArray(loadedItems)) {
+                      loadedItems = loadedItems.filter((i: VisionItem) => 
+                        !i.content.includes("Do it tired.\nDo it sad.\nJust do it.")
+                      );
+                      setItems(loadedItems);
+                 }
+                 if (data.headerConfig) setHeaderConfig(data.headerConfig);
+            }).catch(e => console.warn("Background refresh failed", e));
+        }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     // Handle Local Storage Sync (fallback for non-firebase mode)
     const handleStorageChange = (e: StorageEvent) => {
@@ -270,6 +311,7 @@ const App: React.FC = () => {
 
     return () => {
        unsubscribe();
+       document.removeEventListener('visibilitychange', handleVisibilityChange);
        window.removeEventListener('storage', handleStorageChange);
     };
   }, [boardId, isDataLoaded]); 
@@ -471,7 +513,10 @@ const App: React.FC = () => {
     setJournalSticker('');
     markDirty();
     
-    setTimeout(() => setInteracting(false), 2000);
+    // Using auto-release timeout in setInteracting now, so this timeout just ensures UI feel
+    setTimeout(() => {
+        // No-op, handled by setInteracting logic
+    }, 2000);
   };
 
   const handleInstallClick = () => {
@@ -496,6 +541,11 @@ const App: React.FC = () => {
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault(); 
     e.dataTransfer.dropEffect = "move";
+  };
+
+  const handleDragEnd = () => {
+      setInteracting(false);
+      setDraggedItemIndex(null);
   };
 
   const handleDrop = (e: React.DragEvent, targetIndex: number) => {
@@ -572,7 +622,7 @@ const App: React.FC = () => {
           <div className="absolute -bottom-8 left-20 w-72 h-72 bg-yellow-300 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-blob animation-delay-4000"></div>
        </div>
        
-       {/* Connection Status & Save Indicator */}
+       {/* Connection Status & Save Indicator - Minimal */}
        <div className="fixed top-4 right-4 z-50 flex items-center gap-2">
          {saveStatus && (
            <button 
@@ -584,10 +634,10 @@ const App: React.FC = () => {
               {saveStatus === 'Retry' && <i className="fas fa-redo text-xs text-red-400"></i>}
            </button>
          )}
+
          {!isCloudConnected && (
              <div className="bg-orange-50/90 backdrop-blur-md px-3 py-1.5 rounded-full shadow-sm border border-orange-200 flex items-center gap-2" title="Local Mode - Not Syncing">
                  <i className="fas fa-cloud-slash text-orange-400 text-xs"></i>
-                 <span className="text-[10px] font-bold uppercase text-orange-400 hidden sm:inline">Local Mode</span>
              </div>
          )}
          {isCloudConnected && (
@@ -666,6 +716,8 @@ const App: React.FC = () => {
                       draggable={isRearranging}
                       onDragStart={(e) => handleDragStart(e, index)}
                       onDragOver={handleDragOver}
+                      onDragEnd={handleDragEnd}
+                      onTouchEnd={handleDragEnd}
                       onDrop={(e) => handleDrop(e, index)}
                     >
                       <div className={`flex justify-center relative ${isRearranging ? 'animate-wiggle' : ''}`}>
