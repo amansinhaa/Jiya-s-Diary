@@ -154,7 +154,16 @@ const App: React.FC = () => {
     if (idFromUrl) {
       try {
         const data = await getCloudBoard(idFromUrl);
-        if (data.items && Array.isArray(data.items)) setItems(data.items);
+        
+        // Filter out the "Do it tired" note if it exists in data, per user request
+        let loadedItems = data.items || [];
+        if (Array.isArray(loadedItems)) {
+             loadedItems = loadedItems.filter((i: VisionItem) => 
+               !i.content.includes("Do it tired.\nDo it sad.\nJust do it.")
+             );
+        }
+
+        setItems(loadedItems);
         if (data.headerConfig) setHeaderConfig(data.headerConfig);
         if (data.chatMessages) {
             const fixedMessages = data.chatMessages.map((msg: any) => ({
@@ -212,20 +221,24 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!boardId || !isDataLoaded) return;
 
-    // Subscribe to Firestore updates
-    // We do NOT include isInteracting in the dependency array to avoid resubscribing constantly.
-    // Instead we use the Ref inside the callback.
     console.log("Subscribing to board:", boardId);
     
     const unsubscribe = subscribeToBoard(boardId, (newData) => {
-      // Prevent overwriting if we have local unsaved changes that are newer or user is interacting
+      // Prevent overwriting if user is interacting
       if (isInteractingRef.current) {
           console.log("Update received but user is interacting, skipping...");
           return;
       }
 
       console.log("Applying cloud update...");
-      if (newData.items) setItems(newData.items);
+      
+      // Filter out the "Do it tired" note from incoming updates too
+      let incomingItems = newData.items || [];
+      if(Array.isArray(incomingItems)) {
+         incomingItems = incomingItems.filter((i: VisionItem) => !i.content.includes("Do it tired.\nDo it sad.\nJust do it."));
+      }
+
+      if (incomingItems) setItems(incomingItems);
       if (newData.headerConfig) setHeaderConfig(newData.headerConfig);
       if (newData.chatMessages) {
          const fixedMessages = newData.chatMessages.map((msg: any) => ({
@@ -259,7 +272,7 @@ const App: React.FC = () => {
        unsubscribe();
        window.removeEventListener('storage', handleStorageChange);
     };
-  }, [boardId, isDataLoaded]); // REMOVED other dependencies to ensure stable subscription
+  }, [boardId, isDataLoaded]); 
 
 
   // --- Auto Save Effects ---
@@ -289,6 +302,27 @@ const App: React.FC = () => {
 
   // --- Handlers that trigger "Dirty" state ---
   const markDirty = () => setHasUnsavedChanges(true);
+  
+  // --- Manual Retry Handler ---
+  const handleRetrySave = async () => {
+      if (!boardId) return;
+      setSaveStatus('Saving...');
+      try {
+          await updateCloudBoard(boardId, {
+              items,
+              headerConfig,
+              chatMessages,
+              lastUpdated: Date.now()
+          });
+          setSaveStatus('Saved');
+          setHasUnsavedChanges(false);
+          setTimeout(() => setSaveStatus(''), 2000);
+      } catch (e) {
+          console.error(e);
+          setSaveStatus('Retry');
+          alert("Save failed. Please check your internet connection.");
+      }
+  };
 
   // --- Handlers ---
 
@@ -528,10 +562,14 @@ const App: React.FC = () => {
        {/* Connection Status & Save Indicator */}
        <div className="fixed top-4 right-4 z-50 flex items-center gap-2">
          {saveStatus && (
-           <div className="bg-white/80 backdrop-blur-md px-3 py-1.5 rounded-full shadow-sm border border-gray-100 flex items-center gap-2">
-              <span className={`w-2 h-2 rounded-full ${saveStatus === 'Saved' ? 'bg-green-400' : saveStatus === 'Saving...' ? 'bg-yellow-400' : 'bg-blue-400'}`}></span>
-              <span className="text-[10px] font-bold uppercase text-gray-500">{saveStatus}</span>
-           </div>
+           <button 
+              onClick={saveStatus === 'Retry' ? handleRetrySave : undefined}
+              className={`bg-white/80 backdrop-blur-md px-3 py-1.5 rounded-full shadow-sm border border-gray-100 flex items-center gap-2 ${saveStatus === 'Retry' ? 'cursor-pointer hover:bg-red-50' : ''}`}
+           >
+              <span className={`w-2 h-2 rounded-full ${saveStatus === 'Saved' ? 'bg-green-400' : saveStatus === 'Saving...' ? 'bg-yellow-400' : 'bg-red-500'}`}></span>
+              <span className={`text-[10px] font-bold uppercase ${saveStatus === 'Retry' ? 'text-red-500' : 'text-gray-500'}`}>{saveStatus}</span>
+              {saveStatus === 'Retry' && <i className="fas fa-redo text-xs text-red-400"></i>}
+           </button>
          )}
          {!isCloudConnected && (
              <div className="bg-orange-50/90 backdrop-blur-md px-3 py-1.5 rounded-full shadow-sm border border-orange-200 flex items-center gap-2" title="Local Mode - Not Syncing">
