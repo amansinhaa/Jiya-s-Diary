@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { VisionItem, ChatMessage } from './types';
 import StickyNote from './components/StickyNote';
 import Polaroid from './components/Polaroid';
@@ -15,7 +15,6 @@ const INITIAL_ITEMS: VisionItem[] = [
   { id: '2', type: 'image', content: 'https://images.unsplash.com/photo-1532906619279-a764d89a445d?w=800&q=80', title: 'F1 Race Day 🏎️', rotation: 'rotate-3', scale: 1, sticker: '🏎️' },
   { id: '3', type: 'goal', content: '9.5 CGPA', title: 'Academic Weapon', color: 'bg-pink-100', rotation: '-rotate-1', sticker: '📚', scale: 1, fontSize: 'text-2xl' },
   { id: '4', type: 'note', content: 'Gajar ka Halwa &\nBiryani Feast', title: 'Soul Food', color: 'bg-orange-100', rotation: 'rotate-1', sticker: '🥘', date: 'Always', scale: 1, fontSize: 'text-lg' },
-  { id: '5', type: 'quote', content: 'Do it tired.\nDo it sad.\nJust do it.', color: 'bg-red-200', rotation: 'rotate-2', scale: 1, fontSize: 'text-xl' },
   { id: '6', type: 'image', content: 'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?w=800&q=80', title: 'Himalayan Trek', rotation: '-rotate-3', scale: 1, sticker: '🏔️' },
   { id: '7', type: 'note', content: 'Healthy Body\nPilates & Greens', title: 'That Girl', color: 'bg-green-100', rotation: 'rotate-1', sticker: '🧘‍♀️', scale: 1, fontSize: 'text-lg' },
   { id: '8', type: 'note', content: 'A love that feels\nlike home ❤️', title: 'Relationship', color: 'bg-rose-200', rotation: '-rotate-2', sticker: '💌', scale: 1, fontSize: 'text-lg' },
@@ -64,7 +63,16 @@ const App: React.FC = () => {
   const [loadError, setLoadError] = useState('');
   const [saveStatus, setSaveStatus] = useState<string>('');
   const [isUploading, setIsUploading] = useState(false);
-  const [isInteracting, setIsInteracting] = useState(false);
+  
+  // Ref for interaction state to use in event listeners without re-triggering effects
+  const isInteractingRef = useRef(false);
+  const [isInteractingState, setIsInteractingState] = useState(false); // For UI rendering
+  
+  const setInteracting = (val: boolean) => {
+      isInteractingRef.current = val;
+      setIsInteractingState(val);
+  };
+  
   const [isCloudConnected, setIsCloudConnected] = useState(false);
   
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
@@ -161,13 +169,7 @@ const App: React.FC = () => {
         setHasUnsavedChanges(false); 
       } catch (err: any) {
         console.warn("Load failed", err);
-        // Important: If we are trying to load a specific shared ID and fail, 
-        // DO NOT automatically create a new board. Show retry.
-        // Exception: If error is explicitly "Board not found", we might offer to create new.
         if (err.message === "Board not found") {
-           // Maybe ask user? For now, we'll initialize fresh but warn.
-           // Or better, let's just create new to handle the "I just clicked the link for the first time" case gracefully if the link is invalid.
-           // BUT, if it's a network error, we don't want to create new.
            if (navigator.onLine) {
                await createNewBoard();
            } else {
@@ -211,12 +213,18 @@ const App: React.FC = () => {
     if (!boardId || !isDataLoaded) return;
 
     // Subscribe to Firestore updates
+    // We do NOT include isInteracting in the dependency array to avoid resubscribing constantly.
+    // Instead we use the Ref inside the callback.
+    console.log("Subscribing to board:", boardId);
+    
     const unsubscribe = subscribeToBoard(boardId, (newData) => {
-      // Prevent overwriting if we have local unsaved changes that are newer
-      // But in a real-time app, usually the server wins or we merge.
-      // For simplicity here: we only update if we are not actively interacting/editing
-      if (isInteracting || isEditingHeader || editingItem) return;
+      // Prevent overwriting if we have local unsaved changes that are newer or user is interacting
+      if (isInteractingRef.current) {
+          console.log("Update received but user is interacting, skipping...");
+          return;
+      }
 
+      console.log("Applying cloud update...");
       if (newData.items) setItems(newData.items);
       if (newData.headerConfig) setHeaderConfig(newData.headerConfig);
       if (newData.chatMessages) {
@@ -251,7 +259,7 @@ const App: React.FC = () => {
        unsubscribe();
        window.removeEventListener('storage', handleStorageChange);
     };
-  }, [boardId, isDataLoaded, isInteracting, isEditingHeader, editingItem]);
+  }, [boardId, isDataLoaded]); // REMOVED other dependencies to ensure stable subscription
 
 
   // --- Auto Save Effects ---
@@ -398,7 +406,7 @@ const App: React.FC = () => {
 
   const addJournalEntry = () => {
     if (!journalText.trim()) return;
-    setIsInteracting(true); 
+    setInteracting(true); 
     const newItem: VisionItem = {
       id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
       type: 'journal',
@@ -416,7 +424,7 @@ const App: React.FC = () => {
     setJournalSticker('');
     markDirty();
     
-    setTimeout(() => setIsInteracting(false), 2000);
+    setTimeout(() => setInteracting(false), 2000);
   };
 
   const handleInstallClick = () => {
@@ -433,7 +441,7 @@ const App: React.FC = () => {
   // --- Drag and Drop Logic ---
 
   const handleDragStart = (e: React.DragEvent, index: number) => {
-    setIsInteracting(true); 
+    setInteracting(true); 
     setDraggedItemIndex(index);
     e.dataTransfer.effectAllowed = "move";
   };
@@ -445,7 +453,7 @@ const App: React.FC = () => {
 
   const handleDrop = (e: React.DragEvent, targetIndex: number) => {
     e.preventDefault();
-    setIsInteracting(false); 
+    setInteracting(false); 
     if (draggedItemIndex === null || draggedItemIndex === targetIndex) return;
 
     const boardItems = items.filter(i => i.type !== 'journal');
@@ -1103,14 +1111,6 @@ const App: React.FC = () => {
             className={`bg-rose-500 text-white w-14 h-14 rounded-full flex items-center justify-center -mt-8 shadow-lg hover:bg-rose-600 transition-transform hover:scale-110 ${activeTab === 'create' ? 'ring-4 ring-pink-200' : ''}`}
          >
            <i className="fas fa-plus text-2xl"></i>
-         </button>
-
-         <button 
-           onClick={() => setActiveTab('chat')}
-           className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'chat' ? 'text-rose-500 scale-110' : 'text-gray-400 hover:text-gray-600'}`}
-         >
-           <i className="fas fa-sparkles text-xl"></i>
-           <span className="text-[10px] font-bold uppercase">Bestie</span>
          </button>
 
          <button 
