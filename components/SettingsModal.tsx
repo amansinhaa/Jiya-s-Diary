@@ -1,27 +1,10 @@
-import React, { useState, useEffect } from 'react';
-import { updateAIKey } from '../services/geminiService';
+import React from 'react';
 
 interface SettingsModalProps {
   onClose: () => void;
 }
 
 const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
-  const [apiKey, setApiKey] = useState('');
-  const [isSaved, setIsSaved] = useState(false);
-
-  useEffect(() => {
-    const stored = localStorage.getItem('jiya_gemini_api_key');
-    if (stored) setApiKey(stored);
-  }, []);
-
-  const handleSave = () => {
-    if (apiKey.trim()) {
-      updateAIKey(apiKey.trim());
-      setIsSaved(true);
-      setTimeout(() => setIsSaved(false), 2000);
-    }
-  };
-
   const handleReset = () => {
     if (window.confirm("Are you sure? This will delete ALL your items, journals, and chat history. This cannot be undone.")) {
       localStorage.removeItem('jiya_vision_items');
@@ -45,32 +28,10 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
 
         <div className="p-6 space-y-6">
           
-          {/* API Key Section */}
-          <div className="space-y-2">
-            <label className="block text-xs font-extrabold text-gray-500 uppercase tracking-wide">
-              Google Gemini API Key
-            </label>
-            <p className="text-xs text-gray-400 leading-relaxed">
-              Required for AI features (Bestie Chat, Study Plans, Image Gen). 
-              <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="text-rose-500 hover:underline ml-1 font-bold">
-                Get a free key here.
-              </a>
+          <div className="bg-blue-50 p-4 rounded-xl text-center">
+            <p className="text-sm text-blue-600 font-medium">
+                Gemini AI features are enabled via your Environment API Key.
             </p>
-            <div className="flex gap-2">
-              <input 
-                type="password" 
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="Paste your AI Studio Key here..."
-                className="flex-1 bg-gray-50 border-2 border-gray-200 rounded-xl px-4 py-2 text-sm focus:border-rose-400 focus:outline-none"
-              />
-              <button 
-                onClick={handleSave}
-                className={`px-4 py-2 rounded-xl font-bold text-white transition-all ${isSaved ? 'bg-green-500' : 'bg-rose-500 hover:bg-rose-600'}`}
-              >
-                {isSaved ? <i className="fas fa-check"></i> : 'Save'}
-              </button>
-            </div>
           </div>
 
           <div className="h-px bg-gray-100"></div>

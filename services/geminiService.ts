@@ -1,30 +1,13 @@
 import { GoogleGenAI } from "@google/genai";
 import { GeminiModel } from "../types";
 
-let ai: GoogleGenAI | null = null;
-
-const getAIClient = (): GoogleGenAI | null => {
-  if (ai) return ai;
-
-  // 1. Try Local Storage (User entered key in Settings)
-  const storedKey = localStorage.getItem('jiya_gemini_api_key');
-  
-  // 2. Try Environment Variable (Local development fallback)
-  const envKey = process.env.API_KEY;
-
-  const keyToUse = storedKey || envKey;
-
-  if (keyToUse) {
-    ai = new GoogleGenAI({ apiKey: keyToUse });
-    return ai;
+const getAiClient = () => {
+  const apiKey = process.env.API_KEY;
+  if (!apiKey) {
+    console.warn("Gemini API Key is missing. Please check your environment variables.");
+    return null;
   }
-  
-  return null;
-};
-
-export const updateAIKey = (newKey: string) => {
-  localStorage.setItem('jiya_gemini_api_key', newKey);
-  ai = new GoogleGenAI({ apiKey: newKey });
+  return new GoogleGenAI({ apiKey });
 };
 
 /**
@@ -32,10 +15,10 @@ export const updateAIKey = (newKey: string) => {
  */
 export const getBestieAdvice = async (userMessage: string): Promise<string> => {
   try {
-    const client = getAIClient();
-    if (!client) return "Bestie, you need to add your API Key in Settings (Gear Icon) first! 🔑";
+    const ai = getAiClient();
+    if (!ai) return "Bestie, the API key is missing! Check your settings.";
 
-    const response = await client.models.generateContent({
+    const response = await ai.models.generateContent({
       model: GeminiModel.CHAT_BASIC,
       contents: userMessage,
       config: {
@@ -53,7 +36,7 @@ export const getBestieAdvice = async (userMessage: string): Promise<string> => {
     return response.text || "Bestie, the wifi is acting up, but you're still doing great!";
   } catch (error) {
     console.error("Gemini Chat Error:", error);
-    return "Oops! My crystal ball is foggy. Check your API Key or try again!";
+    return "Oops! My crystal ball is foggy. Try again later!";
   }
 };
 
@@ -62,10 +45,10 @@ export const getBestieAdvice = async (userMessage: string): Promise<string> => {
  */
 export const generateStudyPlan = async (topic: string): Promise<string> => {
   try {
-    const client = getAIClient();
-    if (!client) return "Please add your API Key in Settings first! 🔑";
+    const ai = getAiClient();
+    if (!ai) return "Cannot generate plan: API Key missing.";
 
-    const response = await client.models.generateContent({
+    const response = await ai.models.generateContent({
       model: GeminiModel.STUDY_PLANNER,
       contents: `Create a concise, actionable study plan for Jiya regarding: ${topic}. 
       She is targeting CAT (IIM) and maintaining a 9.5 CGPA.
@@ -86,15 +69,19 @@ export const generateStudyPlan = async (topic: string): Promise<string> => {
  */
 export const generateManifestationImage = async (prompt: string): Promise<string | null> => {
   try {
-    const client = getAIClient();
-    if (!client) {
-      alert("Please set your API Key in Settings first!");
+    const ai = getAiClient();
+    if (!ai) {
+      alert("API Key is missing!");
       return null;
     }
 
-    const response = await client.models.generateContent({
+    const response = await ai.models.generateContent({
       model: GeminiModel.IMAGE_GEN,
-      contents: prompt,
+      contents: {
+        parts: [
+          { text: prompt }
+        ]
+      },
       config: {
         imageConfig: {
           aspectRatio: "1:1",
