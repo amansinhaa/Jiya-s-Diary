@@ -7,7 +7,7 @@ import HeaderEditModal from './components/HeaderEditModal';
 import DataManagementModal from './components/DataManagementModal';
 import SettingsModal from './components/SettingsModal';
 import { getBestieAdvice, generateStudyPlan, generateManifestationImage } from './services/geminiService';
-import { createCloudBoard, getCloudBoard, updateCloudBoard, uploadMedia, subscribeToBoard } from './services/storageService';
+import { createCloudBoard, getCloudBoard, updateCloudBoard, uploadMedia, subscribeToBoard, getCurrentConnectionStatus } from './services/storageService';
 import ReactMarkdown from 'react-markdown';
 
 const INITIAL_ITEMS: VisionItem[] = [
@@ -65,6 +65,7 @@ const App: React.FC = () => {
   const [saveStatus, setSaveStatus] = useState<string>('');
   const [isUploading, setIsUploading] = useState(false);
   const [isInteracting, setIsInteracting] = useState(false);
+  const [isCloudConnected, setIsCloudConnected] = useState(false);
   
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
 
@@ -132,6 +133,8 @@ const App: React.FC = () => {
   const initApp = async () => {
     setIsLoading(true);
     setLoadError('');
+    setIsCloudConnected(getCurrentConnectionStatus());
+    
     const params = new URLSearchParams(window.location.search);
     let idFromUrl = params.get('id');
 
@@ -157,8 +160,22 @@ const App: React.FC = () => {
         setIsDataLoaded(true);
         setHasUnsavedChanges(false); 
       } catch (err: any) {
-        console.warn("Load failed, possibly new local session", err);
-        await createNewBoard();
+        console.warn("Load failed", err);
+        // Important: If we are trying to load a specific shared ID and fail, 
+        // DO NOT automatically create a new board. Show retry.
+        // Exception: If error is explicitly "Board not found", we might offer to create new.
+        if (err.message === "Board not found") {
+           // Maybe ask user? For now, we'll initialize fresh but warn.
+           // Or better, let's just create new to handle the "I just clicked the link for the first time" case gracefully if the link is invalid.
+           // BUT, if it's a network error, we don't want to create new.
+           if (navigator.onLine) {
+               await createNewBoard();
+           } else {
+               setLoadError("You are offline. Could not load shared board.");
+           }
+        } else {
+           setLoadError("Could not load board. Please check connection.");
+        }
       }
     } else {
       await createNewBoard();
@@ -468,6 +485,30 @@ const App: React.FC = () => {
     );
   }
 
+  if (loadError) {
+      return (
+        <div className="min-h-screen bg-[#fdf2f8] flex flex-col items-center justify-center p-6 text-center">
+            <i className="fas fa-wifi text-4xl text-rose-300 mb-4"></i>
+            <h1 className="text-xl font-bold text-gray-700 mb-2">{loadError}</h1>
+            <p className="text-sm text-gray-500 mb-6">We couldn't reach the cloud board. This usually happens if the link is incorrect or internet is spotty.</p>
+            <div className="flex gap-4">
+                <button 
+                  onClick={() => window.location.reload()}
+                  className="bg-rose-500 text-white px-6 py-2 rounded-xl font-bold shadow-lg hover:bg-rose-600 transition-colors"
+                >
+                  Try Again
+                </button>
+                <button 
+                  onClick={createNewBoard}
+                  className="bg-white text-gray-500 px-6 py-2 rounded-xl font-bold shadow-sm border border-gray-200 hover:bg-gray-50 transition-colors"
+                >
+                  Start New Board
+                </button>
+            </div>
+        </div>
+      );
+  }
+
   return (
     <div className="min-h-screen pb-24 relative overflow-hidden bg-[#fdf2f8]">
        <div className="fixed top-0 left-0 w-full h-full pointer-events-none z-0">
@@ -476,12 +517,26 @@ const App: React.FC = () => {
           <div className="absolute -bottom-8 left-20 w-72 h-72 bg-yellow-300 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-blob animation-delay-4000"></div>
        </div>
        
-       {saveStatus && (
-         <div className="fixed top-4 right-4 z-50 bg-white/80 backdrop-blur-md px-3 py-1.5 rounded-full shadow-sm border border-gray-100 flex items-center gap-2">
-            <span className={`w-2 h-2 rounded-full ${saveStatus === 'Saved' ? 'bg-green-400' : saveStatus === 'Saving...' ? 'bg-yellow-400' : 'bg-blue-400'}`}></span>
-            <span className="text-[10px] font-bold uppercase text-gray-500">{saveStatus}</span>
-         </div>
-       )}
+       {/* Connection Status & Save Indicator */}
+       <div className="fixed top-4 right-4 z-50 flex items-center gap-2">
+         {saveStatus && (
+           <div className="bg-white/80 backdrop-blur-md px-3 py-1.5 rounded-full shadow-sm border border-gray-100 flex items-center gap-2">
+              <span className={`w-2 h-2 rounded-full ${saveStatus === 'Saved' ? 'bg-green-400' : saveStatus === 'Saving...' ? 'bg-yellow-400' : 'bg-blue-400'}`}></span>
+              <span className="text-[10px] font-bold uppercase text-gray-500">{saveStatus}</span>
+           </div>
+         )}
+         {!isCloudConnected && (
+             <div className="bg-orange-50/90 backdrop-blur-md px-3 py-1.5 rounded-full shadow-sm border border-orange-200 flex items-center gap-2" title="Local Mode - Not Syncing">
+                 <i className="fas fa-cloud-slash text-orange-400 text-xs"></i>
+                 <span className="text-[10px] font-bold uppercase text-orange-400 hidden sm:inline">Local Mode</span>
+             </div>
+         )}
+         {isCloudConnected && (
+             <div className="bg-green-50/90 backdrop-blur-md px-3 py-1.5 rounded-full shadow-sm border border-green-200 flex items-center gap-2" title="Cloud Sync Active">
+                 <i className="fas fa-cloud text-green-400 text-xs"></i>
+             </div>
+         )}
+       </div>
 
        {editingItem && (
          <EditModal 
@@ -1048,6 +1103,14 @@ const App: React.FC = () => {
             className={`bg-rose-500 text-white w-14 h-14 rounded-full flex items-center justify-center -mt-8 shadow-lg hover:bg-rose-600 transition-transform hover:scale-110 ${activeTab === 'create' ? 'ring-4 ring-pink-200' : ''}`}
          >
            <i className="fas fa-plus text-2xl"></i>
+         </button>
+
+         <button 
+           onClick={() => setActiveTab('chat')}
+           className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'chat' ? 'text-rose-500 scale-110' : 'text-gray-400 hover:text-gray-600'}`}
+         >
+           <i className="fas fa-sparkles text-xl"></i>
+           <span className="text-[10px] font-bold uppercase">Bestie</span>
          </button>
 
          <button 
