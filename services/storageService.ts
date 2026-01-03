@@ -170,10 +170,12 @@ export const subscribeToBoard = (id: string, onUpdate: (data: any) => void) => {
   return () => {}; // No-op for local mode (handled via storage event elsewhere)
 };
 
-export const uploadMedia = async (file: File): Promise<string> => {
+export const uploadMedia = async (file: File | Blob): Promise<string> => {
   if (isFirebaseEnabled && storage) {
     try {
-      const fileName = `images/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.]/g, '_')}`;
+      // If it's a Blob (compressed), we need to give it a name, or if it's a File use its name
+      const originalName = (file as File).name || 'image.jpg';
+      const fileName = `images/${Date.now()}_${originalName.replace(/[^a-zA-Z0-9.]/g, '_')}`;
       const storageRef = ref(storage, fileName);
       const snapshot = await uploadBytes(storageRef, file);
       const downloadURL = await getDownloadURL(snapshot.ref);

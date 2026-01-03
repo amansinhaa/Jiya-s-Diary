@@ -5,17 +5,23 @@ interface PolaroidProps {
   caption: string;
   rotation: string;
   sticker?: string;
+  imageFit?: 'cover' | 'contain';
   onClick?: () => void;
 }
 
-const Polaroid: React.FC<PolaroidProps> = ({ src, caption, rotation, sticker, onClick }) => {
+const Polaroid: React.FC<PolaroidProps> = ({ src, caption, rotation, sticker, imageFit = 'cover', onClick }) => {
   return (
     <div 
       onClick={onClick}
       className={`bg-white p-3 pb-8 shadow-lg transition-all hover:scale-110 hover:z-20 ${onClick ? 'cursor-pointer' : ''} relative group`}
     >
-      <div className="overflow-hidden aspect-square mb-3 bg-gray-100">
-        <img src={src} alt={caption} className="w-full h-full object-cover" loading="lazy" />
+      <div className={`overflow-hidden aspect-square mb-3 bg-gray-100 flex items-center justify-center`}>
+        <img 
+          src={src} 
+          alt={caption} 
+          className={`w-full h-full ${imageFit === 'contain' ? 'object-contain' : 'object-cover'}`} 
+          loading="lazy" 
+        />
       </div>
       <p className="text-center font-handwriting text-gray-600 text-lg">{caption}</p>
 

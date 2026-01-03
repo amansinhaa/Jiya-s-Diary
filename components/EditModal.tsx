@@ -27,7 +27,8 @@ const EditModal: React.FC<EditModalProps> = ({ item, stickers, onSave, onDelete,
   const [formData, setFormData] = useState<VisionItem>({ 
     ...item, 
     scale: item.scale || 1,
-    fontSize: item.fontSize || 'text-lg' // Default
+    fontSize: item.fontSize || 'text-lg', // Default
+    imageFit: item.imageFit || 'cover'
   });
 
   // Update formData when input changes
@@ -74,6 +75,7 @@ const EditModal: React.FC<EditModalProps> = ({ item, stickers, onSave, onDelete,
                         caption={formData.title || ''} 
                         rotation={formData.rotation || 'rotate-0'} 
                         sticker={formData.sticker}
+                        imageFit={formData.imageFit}
                     />
                   </div>
                 ) : (
@@ -187,7 +189,23 @@ const EditModal: React.FC<EditModalProps> = ({ item, stickers, onSave, onDelete,
             {/* Image Fields */}
             {formData.type === 'image' && (
               <div className="animate-fadeIn">
-                 <label className="block text-[10px] font-extrabold text-gray-600 uppercase mb-1 tracking-wide">Image URL</label>
+                 <div className="flex justify-between items-center mb-1">
+                    <label className="block text-[10px] font-extrabold text-gray-600 uppercase tracking-wide">Image Options</label>
+                    <div className="flex gap-1 bg-gray-100 p-0.5 rounded-lg">
+                        <button
+                          onClick={() => handleChange('imageFit', 'cover')}
+                          className={`px-2 py-1 rounded text-[10px] font-bold transition-all ${formData.imageFit === 'cover' ? 'bg-white text-rose-500 shadow-sm' : 'text-gray-400'}`}
+                        >
+                            Fill
+                        </button>
+                        <button
+                          onClick={() => handleChange('imageFit', 'contain')}
+                          className={`px-2 py-1 rounded text-[10px] font-bold transition-all ${formData.imageFit === 'contain' ? 'bg-white text-rose-500 shadow-sm' : 'text-gray-400'}`}
+                        >
+                            Fit
+                        </button>
+                    </div>
+                 </div>
                  <input 
                    type="text" 
                    value={formData.content} 

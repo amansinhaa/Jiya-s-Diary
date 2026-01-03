@@ -6,6 +6,7 @@ import EditModal from './components/EditModal';
 import HeaderEditModal from './components/HeaderEditModal';
 import DataManagementModal from './components/DataManagementModal';
 import SettingsModal from './components/SettingsModal';
+import LockScreen from './components/LockScreen';
 import { getBestieAdvice, generateStudyPlan, generateManifestationImage } from './services/geminiService';
 import { createCloudBoard, getCloudBoard, updateCloudBoard, uploadMedia, subscribeToBoard, getCurrentConnectionStatus, uploadBase64 } from './services/storageService';
 import ReactMarkdown from 'react-markdown';
@@ -54,7 +55,41 @@ const FONT_SIZES = [
   { label: '3XL', class: 'text-3xl' },
 ];
 
+// Image compression utility - Optimized: No Resize, Just Quality Compression
+const compressImage = async (file: File): Promise<Blob> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (e) => {
+      const img = new Image();
+      img.src = e.target?.result as string;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        
+        // KEEP ORIGINAL DIMENSIONS
+        canvas.width = img.width;
+        canvas.height = img.height;
+        
+        const ctx = canvas.getContext('2d');
+        ctx?.drawImage(img, 0, 0, img.width, img.height);
+        
+        // Compress quality to 0.7 (70%)
+        canvas.toBlob((blob) => {
+          if (blob) resolve(blob);
+          else reject(new Error('Compression failed'));
+        }, 'image/jpeg', 0.7); 
+      };
+      img.onerror = reject;
+    };
+    reader.onerror = reject;
+  });
+};
+
 const App: React.FC = () => {
+  // --- Lock Screen State ---
+  const [isLocked, setIsLocked] = useState(false);
+  const [lockPasscode, setLockPasscode] = useState<string | null>(null);
+
   // --- Persistent State Initialization ---
   const [items, setItems] = useState<VisionItem[]>([]);
   const [headerConfig, setHeaderConfig] = useState(INITIAL_HEADER);
@@ -82,7 +117,6 @@ const App: React.FC = () => {
 
       if (val) {
           // Safety valve: Auto-release interaction lock after 5 seconds of inactivity
-          // This is critical for mobile where drag events might get stuck
           interactionTimeoutRef.current = setTimeout(() => {
               console.log("Auto-releasing stuck interaction lock");
               isInteractingRef.current = false;
@@ -104,6 +138,7 @@ const App: React.FC = () => {
   // Reorder State
   const [isRearranging, setIsRearranging] = useState(false);
   const [draggedItemIndex, setDraggedItemIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null); // For visual hint
 
   // Journal State
   const [showNewJournalForm, setShowNewJournalForm] = useState(false);
@@ -126,6 +161,7 @@ const App: React.FC = () => {
   const [createScale, setCreateScale] = useState<number>(1);
   const [createRotation, setCreateRotation] = useState<number>(0);
   const [createFontSize, setCreateFontSize] = useState<string>('text-lg');
+  const [createImageFit, setCreateImageFit] = useState<'cover' | 'contain'>('cover');
   
   // AI Image Gen
   const [prompt, setPrompt] = useState('');
@@ -157,6 +193,20 @@ const App: React.FC = () => {
 
   // --- Initialization & URL Parsing ---
   const initApp = async () => {
+    // Check Lock Status
+    try {
+      const lockConfig = localStorage.getItem('jiya_app_lock');
+      if (lockConfig) {
+        const { enabled, code } = JSON.parse(lockConfig);
+        if (enabled && code) {
+          setIsLocked(true);
+          setLockPasscode(code);
+        }
+      }
+    } catch (e) {
+      console.error("Failed to parse lock config");
+    }
+
     setIsLoading(true);
     setLoadError('');
     setIsCloudConnected(getCurrentConnectionStatus());
@@ -165,7 +215,6 @@ const App: React.FC = () => {
     let idFromUrl = params.get('id');
 
     // Default to the specific board ID if none provided
-    // This ensures sharing the root URL opens Jiya's specific board
     if (!idFromUrl) {
       idFromUrl = DEFAULT_BOARD_ID;
       updateUrlSafe(idFromUrl);
@@ -174,7 +223,6 @@ const App: React.FC = () => {
     if (idFromUrl) {
       await loadBoardData(idFromUrl);
     } else {
-      // Fallback (unlikely given logic above)
       await createNewBoard();
     }
     setIsLoading(false);
@@ -184,7 +232,7 @@ const App: React.FC = () => {
       try {
         const data = await getCloudBoard(id);
         
-        // Filter out the "Do it tired" note if it exists in data, per user request
+        // Filter out the "Do it tired" note if it exists in data
         let loadedItems = data.items || [];
         if (Array.isArray(loadedItems)) {
              loadedItems = loadedItems.filter((i: VisionItem) => 
@@ -209,7 +257,7 @@ const App: React.FC = () => {
       } catch (err: any) {
         console.warn("Load failed", err);
         if (err.message === "Board not found") {
-           // Self-Healing: If the default board is missing, create it automatically!
+           // Self-Healing
            if (id === DEFAULT_BOARD_ID) {
               console.log("Default board not found, creating it now...");
               try {
@@ -219,7 +267,6 @@ const App: React.FC = () => {
                       chatMessages: [{ role: 'model', text: "Hey Jiya! Ready to manifest that 9.5 CGPA and London trip? ✨", timestamp: new Date() }]
                   }, DEFAULT_BOARD_ID);
                   
-                  // Now try loading again immediately
                   await loadBoardData(DEFAULT_BOARD_ID);
                   return;
               } catch (createErr) {
@@ -264,26 +311,14 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!boardId || !isDataLoaded) return;
 
-    console.log("Subscribing to board:", boardId);
-    
     const unsubscribe = subscribeToBoard(boardId, (newData) => {
-      // Prevent overwriting if user is interacting
-      if (isInteractingRef.current) {
-          console.log("Update received but user is interacting, skipping...");
-          return;
-      }
+      if (isInteractingRef.current) return;
 
-      console.log("Applying cloud update...");
-      
-      // Filter out the "Do it tired" note from incoming updates too
       let incomingItems = newData.items || [];
       if(Array.isArray(incomingItems)) {
          incomingItems = incomingItems.filter((i: VisionItem) => !i.content.includes("Do it tired.\nDo it sad.\nJust do it."));
       }
 
-      // Check for changes before setting state to avoid loops
-      // Simplified check: just check length or basic ID diff if needed, 
-      // but React state updates handle identity checks well enough for this.
       if (incomingItems) setItems(incomingItems);
       if (newData.headerConfig) setHeaderConfig(newData.headerConfig);
       if (newData.chatMessages) {
@@ -295,11 +330,8 @@ const App: React.FC = () => {
       }
     });
 
-    // --- Visibility Listener (Smart Wake-Up) ---
-    // Force a re-fetch when user switches back to this tab/app on mobile
     const handleVisibilityChange = () => {
         if (document.visibilityState === 'visible' && boardId) {
-            console.log("App active, forcing refresh...");
             getCloudBoard(boardId).then((data) => {
                  let loadedItems = data.items || [];
                  if (Array.isArray(loadedItems)) {
@@ -314,20 +346,12 @@ const App: React.FC = () => {
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
-    // Handle Local Storage Sync (fallback for non-firebase mode)
     const handleStorageChange = (e: StorageEvent) => {
       if (e.key && e.key.includes(boardId)) {
          try {
            const newData = JSON.parse(e.newValue || '{}');
            if (newData.items) setItems(newData.items);
            if (newData.headerConfig) setHeaderConfig(newData.headerConfig);
-           if (newData.chatMessages) {
-              const fixedMessages = newData.chatMessages.map((msg: any) => ({
-                  ...msg,
-                  timestamp: new Date(msg.timestamp)
-              }));
-              setChatMessages(fixedMessages);
-           }
          } catch (err) { }
       }
     };
@@ -366,10 +390,8 @@ const App: React.FC = () => {
     }
   }, [items, headerConfig, chatMessages, boardId, isDataLoaded, hasUnsavedChanges]);
 
-  // --- Handlers that trigger "Dirty" state ---
   const markDirty = () => setHasUnsavedChanges(true);
   
-  // --- Manual Retry Handler ---
   const handleRetrySave = async () => {
       if (!boardId) return;
       setSaveStatus('Saving...');
@@ -384,14 +406,12 @@ const App: React.FC = () => {
           setHasUnsavedChanges(false);
           setTimeout(() => setSaveStatus(''), 2000);
       } catch (e) {
-          console.error(e);
           setSaveStatus('Retry');
           alert("Save failed. The board might be too large or connection is unstable.");
       }
   };
 
   // --- Handlers ---
-
   const handleUpdateItem = (updatedItem: VisionItem) => {
     setItems(prev => prev.map(item => item.id === updatedItem.id ? updatedItem : item));
     setEditingItem(null);
@@ -406,10 +426,28 @@ const App: React.FC = () => {
     }
   };
 
+  const handleCreateTypeChange = (type: 'note' | 'image') => {
+      if (type !== createType) {
+          setCreateType(type);
+          setCreateContent(''); // Clear content to avoid URL showing in note text area
+      }
+  };
+
+  const handleResetCreateForm = () => {
+      setCreateContent('');
+      setCreateTitle('');
+      setCreateSticker('');
+      setPrompt('');
+      setCreateScale(1);
+      setCreateRotation(0);
+      setCreateFontSize('text-lg');
+      setCreateColor('bg-pink-100');
+      setCreateImageFit('cover');
+  };
+
   const handleAddItem = async () => {
     if (!createContent.trim()) return;
     
-    // Check if content is a large base64 string and upload it to Storage
     let finalContent = createContent;
     if (createContent.startsWith('data:image')) {
         setIsUploading(true);
@@ -433,17 +471,12 @@ const App: React.FC = () => {
       rotation: `rotate-[${createRotation}deg]`,
       scale: createScale,
       fontSize: createFontSize,
+      imageFit: createImageFit,
     };
 
     setItems(prev => [newItem, ...prev]);
     setActiveTab('board');
-    setCreateContent('');
-    setCreateTitle('');
-    setCreateSticker('');
-    setPrompt('');
-    setCreateScale(1);
-    setCreateRotation(0);
-    setCreateFontSize('text-lg');
+    handleResetCreateForm();
     markDirty();
   };
 
@@ -466,7 +499,9 @@ const App: React.FC = () => {
     if (file) {
       setIsUploading(true);
       try {
-        const uploadedUrl = await uploadMedia(file);
+        // Compress image before upload (No resize, just quality)
+        const compressedBlob = await compressImage(file);
+        const uploadedUrl = await uploadMedia(compressedBlob);
         setCreateContent(uploadedUrl);
       } catch (err: any) {
         console.error("Upload failed", err);
@@ -478,6 +513,7 @@ const App: React.FC = () => {
     }
   };
 
+  // ... Chat & Journal Handlers ...
   const handleSendMessage = async () => {
     if (!userInput.trim()) return;
     const newMsg: ChatMessage = { role: 'user', text: userInput, timestamp: new Date() };
@@ -536,11 +572,7 @@ const App: React.FC = () => {
     setJournalTitle('');
     setJournalSticker('');
     markDirty();
-    
-    // Using auto-release timeout in setInteracting now, so this timeout just ensures UI feel
-    setTimeout(() => {
-        // No-op, handled by setInteracting logic
-    }, 2000);
+    setTimeout(() => { }, 2000);
   };
 
   const handleInstallClick = () => {
@@ -562,19 +594,25 @@ const App: React.FC = () => {
     e.dataTransfer.effectAllowed = "move";
   };
 
-  const handleDragOver = (e: React.DragEvent) => {
+  const handleDragOver = (e: React.DragEvent, index: number) => {
     e.preventDefault(); 
     e.dataTransfer.dropEffect = "move";
+    if (isRearranging) {
+        setDragOverIndex(index);
+    }
   };
 
   const handleDragEnd = () => {
       setInteracting(false);
       setDraggedItemIndex(null);
+      setDragOverIndex(null);
   };
 
   const handleDrop = (e: React.DragEvent, targetIndex: number) => {
     e.preventDefault();
     setInteracting(false); 
+    setDragOverIndex(null);
+    
     if (draggedItemIndex === null || draggedItemIndex === targetIndex) return;
 
     const boardItems = items.filter(i => i.type !== 'journal');
@@ -590,12 +628,10 @@ const App: React.FC = () => {
     markDirty();
   };
 
-  // Helper to extract numeric rotation for wrapper style
   const getRotateTransform = (rot?: string) => {
     if (!rot) return '';
     const match = rot.match(/rotate-\[?(-?\d+)(deg)?\]?/);
     if (match) return `rotate(${match[1]}deg)`;
-    
     const standardMatch = rot.match(/(-?)rotate-(\d+)/);
     if (standardMatch) {
       const sign = standardMatch[1] === '-' ? -1 : 1;
@@ -604,6 +640,16 @@ const App: React.FC = () => {
     }
     return '';
   };
+
+  if (isLocked && lockPasscode) {
+    return (
+      <LockScreen 
+        passcode={lockPasscode} 
+        onUnlock={() => setIsLocked(false)} 
+        stickers={STICKERS}
+      />
+    );
+  }
 
   if (isLoading) {
     return (
@@ -620,33 +666,21 @@ const App: React.FC = () => {
             <i className="fas fa-wifi text-4xl text-rose-300 mb-4"></i>
             <h1 className="text-xl font-bold text-gray-700 mb-2">{loadError}</h1>
             <p className="text-sm text-gray-500 mb-6">We couldn't reach the cloud board. This usually happens if the link is incorrect or internet is spotty.</p>
-            <div className="flex gap-4">
-                <button 
-                  onClick={() => window.location.reload()}
-                  className="bg-rose-500 text-white px-6 py-2 rounded-xl font-bold shadow-lg hover:bg-rose-600 transition-colors"
-                >
-                  Try Again
-                </button>
-                <button 
-                  onClick={createNewBoard}
-                  className="bg-white text-gray-500 px-6 py-2 rounded-xl font-bold shadow-sm border border-gray-200 hover:bg-gray-50 transition-colors"
-                >
-                  Start New Board
-                </button>
-            </div>
+            <button onClick={() => window.location.reload()} className="bg-rose-500 text-white px-6 py-2 rounded-xl font-bold shadow-lg">Try Again</button>
         </div>
       );
   }
 
   return (
     <div className="min-h-screen pb-24 relative overflow-hidden bg-[#fdf2f8]">
+       {/* Ambient blobs */}
        <div className="fixed top-0 left-0 w-full h-full pointer-events-none z-0">
           <div className="absolute top-10 left-10 w-64 h-64 bg-pink-300 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-blob"></div>
           <div className="absolute top-0 right-10 w-72 h-72 bg-purple-300 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-blob animation-delay-2000"></div>
           <div className="absolute -bottom-8 left-20 w-72 h-72 bg-yellow-300 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-blob animation-delay-4000"></div>
        </div>
        
-       {/* Connection Status & Save Indicator - Minimal */}
+       {/* Connection Status & Save Indicator */}
        <div className="fixed top-4 right-4 z-50 flex items-center gap-2">
          {saveStatus && (
            <button 
@@ -660,7 +694,7 @@ const App: React.FC = () => {
          )}
 
          {!isCloudConnected && (
-             <div className="bg-orange-50/90 backdrop-blur-md px-3 py-1.5 rounded-full shadow-sm border border-orange-200 flex items-center gap-2" title="Local Mode - Not Syncing">
+             <div className="bg-orange-50/90 backdrop-blur-md px-3 py-1.5 rounded-full shadow-sm border border-orange-200 flex items-center gap-2" title="Local Mode">
                  <i className="fas fa-cloud-slash text-orange-400 text-xs"></i>
              </div>
          )}
@@ -736,15 +770,18 @@ const App: React.FC = () => {
                   {items.filter(i => i.type !== 'journal').map((item, index) => (
                     <div 
                       key={item.id} 
-                      className={`break-inside-avoid inline-block w-full transition-all duration-200 ${isRearranging ? 'cursor-move hover:opacity-90' : ''}`}
+                      className={`break-inside-avoid inline-block w-full transition-all duration-200 
+                        ${isRearranging ? 'cursor-move hover:opacity-90' : ''} 
+                        ${isRearranging && dragOverIndex === index ? 'scale-105 opacity-50' : ''}
+                      `}
                       draggable={isRearranging}
                       onDragStart={(e) => handleDragStart(e, index)}
-                      onDragOver={handleDragOver}
+                      onDragOver={(e) => handleDragOver(e, index)}
                       onDragEnd={handleDragEnd}
                       onTouchEnd={handleDragEnd}
                       onDrop={(e) => handleDrop(e, index)}
                     >
-                      <div className={`flex justify-center relative ${isRearranging ? 'animate-wiggle' : ''}`}>
+                      <div className={`flex justify-center relative ${isRearranging ? 'animate-wiggle' : ''} ${isRearranging && dragOverIndex === index ? 'ring-4 ring-rose-300 rounded-lg' : ''}`}>
                         {isRearranging && (
                           <button 
                             onClick={(e) => {
@@ -769,7 +806,6 @@ const App: React.FC = () => {
                           </button>
                         )}
 
-                        {/* Apply transform to wrapper to prevent inline style conflict with hover effects */}
                         <div style={{ 
                            transform: `scale(${item.scale || 1}) ${getRotateTransform(item.rotation)}`, 
                            transition: 'transform 0.2s' 
@@ -781,6 +817,7 @@ const App: React.FC = () => {
                                 caption={item.title || 'Vibes'} 
                                 rotation="" 
                                 sticker={item.sticker}
+                                imageFit={item.imageFit}
                                 onClick={!isRearranging ? () => setEditingItem(item) : undefined}
                               />
                             </div>
@@ -843,7 +880,7 @@ const App: React.FC = () => {
             </div>
           )}
           
-          {/* ... Rest of Tab Logic for journal, chat, create ... */}
+          {/* ... Rest of Tab Logic ... */}
           {activeTab === 'journal' && (
             <div className="max-w-3xl mx-auto pb-24">
                <div className="flex justify-between items-center mb-6 bg-white/50 p-3 sm:p-4 rounded-2xl backdrop-blur-sm">
@@ -905,12 +942,6 @@ const App: React.FC = () => {
                )}
 
                <div className="space-y-4 sm:space-y-6">
-                 {items.filter(i => i.type === 'journal').length === 0 && !showNewJournalForm && (
-                   <div className="text-center py-20 opacity-50">
-                     <i className="fas fa-book-open text-6xl text-pink-300 mb-4"></i>
-                     <p className="font-handwriting text-2xl text-gray-500">No entries yet. Write your first one!</p>
-                   </div>
-                 )}
                  {items.filter(i => i.type === 'journal').map((entry) => (
                    <div key={entry.id} className="bg-white p-4 sm:p-6 md:p-8 rounded-3xl shadow-sm border border-pink-50 hover:shadow-md transition-shadow relative overflow-hidden group">
                       <div className="absolute top-0 left-6 sm:left-8 bottom-0 w-[2px] bg-red-200 opacity-50"></div>
@@ -924,10 +955,7 @@ const App: React.FC = () => {
                           </div>
                           <div className="flex gap-2">
                             {entry.sticker && <span className="text-2xl sm:text-3xl filter drop-shadow-sm">{entry.sticker}</span>}
-                            <button 
-                              onClick={() => setEditingItem(entry)}
-                              className="text-gray-300 hover:text-gray-500 p-2 opacity-0 group-hover:opacity-100 transition-opacity"
-                            >
+                            <button onClick={() => setEditingItem(entry)} className="text-gray-300 hover:text-gray-500 p-2 opacity-0 group-hover:opacity-100 transition-opacity">
                               <i className="fas fa-pencil-alt"></i>
                             </button>
                           </div>
@@ -944,28 +972,32 @@ const App: React.FC = () => {
 
           {activeTab === 'create' && (
             <div className="max-w-md mx-auto bg-white/90 backdrop-blur-md rounded-3xl shadow-xl p-4 sm:p-5 border-4 border-dashed border-pink-200">
-               <h2 className="text-xl sm:text-2xl font-handwriting text-gray-800 mb-2 text-center">Manifest Something New</h2>
+               <div className="flex justify-between items-center mb-2">
+                 <h2 className="text-xl sm:text-2xl font-handwriting text-gray-800 text-center flex-1">Manifest Something New</h2>
+                 <button onClick={handleResetCreateForm} className="text-gray-400 hover:text-rose-500 text-xs font-bold uppercase" title="Clear All Fields">
+                   Reset
+                 </button>
+               </div>
                
                <div className="space-y-2 animate-fadeIn">
-                 {/* ... Create Tab Content (No changes needed except verify rotation logic in preview) ... */}
-                 {/* Note: The preview here uses separate rotation handling, which is fine for the modal */}
                  <div className="flex bg-pink-100 p-1 rounded-xl mb-2">
                     <button 
-                      onClick={() => setCreateType('note')}
+                      onClick={() => handleCreateTypeChange('note')}
                       className={`flex-1 py-1.5 rounded-xl font-bold text-xs transition-all flex justify-center items-center gap-2 ${createType === 'note' ? 'bg-white text-rose-500 shadow-md' : 'text-gray-500 hover:text-rose-400'}`}
                     >
                       <i className="fas fa-sticky-note"></i> Note
                     </button>
                     <button 
-                      onClick={() => setCreateType('image')}
+                      onClick={() => handleCreateTypeChange('image')}
                       className={`flex-1 py-1.5 rounded-xl font-bold text-xs transition-all flex justify-center items-center gap-2 ${createType === 'image' ? 'bg-white text-rose-500 shadow-md' : 'text-gray-500 hover:text-rose-400'}`}
                     >
                       <i className="fas fa-image"></i> Image
                     </button>
                  </div>
 
-                 <div className="flex justify-center py-2 bg-pink-50/50 rounded-xl mb-2 border border-pink-100 border-dashed min-h-[140px] items-center overflow-hidden">
-                    <div style={{ transform: `scale(${createScale * 0.7})`, transition: 'transform 0.2s' }}>
+                 {/* Preview */}
+                 <div className="flex justify-center py-1 bg-pink-50/50 rounded-xl mb-2 border border-pink-100 border-dashed min-h-[100px] h-36 items-center overflow-hidden">
+                    <div style={{ transform: `scale(${createScale * 0.6})`, transition: 'transform 0.2s' }}>
                       {createType === 'note' ? (
                         <div style={{ transform: `rotate(${createRotation}deg)` }}>
                           <StickyNote 
@@ -975,7 +1007,7 @@ const App: React.FC = () => {
                             sticker={createSticker}
                             color={createColor}
                             fontSize={createFontSize}
-                            rotation="" // Pass empty, we handle it in wrapper
+                            rotation="" 
                             className="shadow-md"
                           />
                         </div>
@@ -988,6 +1020,7 @@ const App: React.FC = () => {
                                     caption={createTitle || "Caption"} 
                                     rotation="" 
                                     sticker={createSticker}
+                                    imageFit={createImageFit}
                                 />
                              </div>
                            </div>
@@ -1039,16 +1072,37 @@ const App: React.FC = () => {
                         </div>
                       </div>
 
-                      <input 
-                        type="text"
-                        value={createContent}
-                        onChange={(e) => setCreateContent(e.target.value)}
-                        placeholder="Or paste Image URL..."
-                        className="w-full bg-pink-50 rounded-xl px-3 py-2 focus:ring-2 focus:ring-pink-300 outline-none text-gray-600 text-[10px] font-mono"
-                      />
+                      <div className="flex gap-2">
+                         <div className="flex-1">
+                             <input 
+                               type="text"
+                               value={createContent}
+                               onChange={(e) => setCreateContent(e.target.value)}
+                               placeholder="Or paste Image URL..."
+                               className="w-full bg-pink-50 rounded-xl px-3 py-2 focus:ring-2 focus:ring-pink-300 outline-none text-gray-600 text-[10px] font-mono"
+                             />
+                         </div>
+                         <div className="bg-pink-50 rounded-xl p-1 flex">
+                            <button
+                              onClick={() => setCreateImageFit('cover')}
+                              className={`px-2 py-1 rounded-lg text-[10px] font-bold transition-all ${createImageFit === 'cover' ? 'bg-white text-rose-500 shadow-sm' : 'text-gray-400 hover:text-rose-400'}`}
+                              title="Fill frame (crop)"
+                            >
+                                Fill
+                            </button>
+                            <button
+                              onClick={() => setCreateImageFit('contain')}
+                              className={`px-2 py-1 rounded-lg text-[10px] font-bold transition-all ${createImageFit === 'contain' ? 'bg-white text-rose-500 shadow-sm' : 'text-gray-400 hover:text-rose-400'}`}
+                              title="Fit image (no crop)"
+                            >
+                                Fit
+                            </button>
+                         </div>
+                      </div>
                     </div>
                  )}
 
+                 {/* Remaining Create Controls (Date, Color, Sticker, Sliders) */}
                  <div className="flex gap-2">
                    <div className="flex-1">
                      <label className="block text-[8px] font-bold text-gray-500 uppercase mb-1">Date</label>
@@ -1103,11 +1157,6 @@ const App: React.FC = () => {
                            onChange={(e) => setCreateRotation(parseInt(e.target.value))}
                            className="w-full accent-rose-500 h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer"
                          />
-                         <div className="flex justify-between text-[6px] text-gray-400 mt-0.5 font-bold uppercase tracking-wider">
-                           <span>-15°</span>
-                           <span>0°</span>
-                           <span>15°</span>
-                         </div>
                       </div>
                     </div>
 
@@ -1123,11 +1172,6 @@ const App: React.FC = () => {
                            onChange={(e) => setCreateScale(parseFloat(e.target.value))}
                            className="w-full accent-rose-500 h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer"
                          />
-                         <div className="flex justify-between text-[6px] text-gray-400 mt-0.5 font-bold uppercase tracking-wider">
-                           <span>Small</span>
-                           <span>Normal</span>
-                           <span>Big</span>
-                         </div>
                      </div>
                    </div>
 

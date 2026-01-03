@@ -9,6 +9,7 @@ export interface VisionItem {
   date?: string; // Target date or creation date
   sticker?: string; // Emoji sticker
   fontSize?: string; // Tailwind text size class
+  imageFit?: 'cover' | 'contain'; // Image fitting mode
 }
 
 export interface ChatMessage {

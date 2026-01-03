@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { saveFirebaseConfig, clearFirebaseConfig, getCurrentConnectionStatus } from '../services/storageService';
 
 interface SettingsModalProps {
@@ -10,11 +10,30 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
   const [configJson, setConfigJson] = useState('');
   const isConnected = getCurrentConnectionStatus();
 
+  // Lock Screen State
+  const [lockEnabled, setLockEnabled] = useState(false);
+  const [passcode, setPasscode] = useState('');
+  const [showPasscodeSetup, setShowPasscodeSetup] = useState(false);
+
+  useEffect(() => {
+    const lockConfig = localStorage.getItem('jiya_app_lock');
+    if (lockConfig) {
+      try {
+        const { enabled, code } = JSON.parse(lockConfig);
+        setLockEnabled(enabled);
+        setPasscode(code || '');
+      } catch (e) {
+        console.error("Failed to load lock config");
+      }
+    }
+  }, []);
+
   const handleReset = () => {
     if (window.confirm("Are you sure? This will delete ALL your items, journals, and chat history. This cannot be undone.")) {
       localStorage.removeItem('jiya_vision_items');
       localStorage.removeItem('jiya_header_config');
       localStorage.removeItem('jiya_chat_history');
+      localStorage.removeItem('jiya_app_lock');
       window.location.reload();
     }
   };
@@ -38,6 +57,26 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
       }
   };
 
+  const handleSavePasscode = () => {
+    if (passcode.length !== 4) {
+      alert("Passcode must be 4 digits");
+      return;
+    }
+    const config = { enabled: true, code: passcode };
+    localStorage.setItem('jiya_app_lock', JSON.stringify(config));
+    setLockEnabled(true);
+    setShowPasscodeSetup(false);
+    alert("Lock Screen Enabled! 🔒");
+  };
+
+  const handleDisableLock = () => {
+    if (window.confirm("Disable lock screen?")) {
+      localStorage.removeItem('jiya_app_lock');
+      setLockEnabled(false);
+      setPasscode('');
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fadeIn">
       <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden max-h-[90vh] overflow-y-auto">
@@ -56,6 +95,69 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
             <p className="text-sm text-blue-600 font-medium">
                 Gemini AI features are enabled via your Environment API Key.
             </p>
+          </div>
+
+          <div className="h-px bg-gray-100"></div>
+
+          {/* Security Section */}
+          <div className="space-y-3">
+             <div className="flex justify-between items-center">
+                <label className="block text-xs font-extrabold text-rose-500 uppercase tracking-wide">
+                  App Security
+                </label>
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${lockEnabled ? 'bg-rose-100 text-rose-600' : 'bg-gray-100 text-gray-500'}`}>
+                    {lockEnabled ? 'Locked 🔒' : 'Unlocked'}
+                </span>
+             </div>
+
+             {!lockEnabled ? (
+               !showPasscodeSetup ? (
+                 <button 
+                   onClick={() => setShowPasscodeSetup(true)}
+                   className="w-full py-3 border-2 border-rose-100 text-rose-500 font-bold rounded-xl hover:bg-rose-50 transition-colors flex items-center justify-center gap-2 text-sm"
+                 >
+                   <i className="fas fa-lock"></i> Enable Passcode Lock
+                 </button>
+               ) : (
+                 <div className="bg-rose-50 p-4 rounded-xl border border-rose-100 animate-fadeIn">
+                    <p className="text-xs text-rose-800 mb-2 font-bold">Set 4-digit Passcode:</p>
+                    <input 
+                      type="number" 
+                      value={passcode}
+                      onChange={(e) => setPasscode(e.target.value.slice(0, 4))}
+                      className="w-full bg-white rounded-lg p-3 text-center text-xl tracking-widest font-bold border-2 border-gray-300 focus:border-rose-400 focus:outline-none focus:ring-4 focus:ring-rose-100 mb-4 text-gray-800 shadow-inner"
+                      placeholder="0000"
+                    />
+                    <div className="flex gap-2">
+                         <button 
+                           onClick={() => setShowPasscodeSetup(false)}
+                           className="flex-1 py-2 text-xs font-bold text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg border border-gray-200"
+                         >
+                           Cancel
+                         </button>
+                         <button 
+                           onClick={handleSavePasscode}
+                           className="flex-1 py-2 text-xs font-bold text-white bg-rose-500 hover:bg-rose-600 rounded-lg shadow-sm"
+                         >
+                           Set Lock
+                         </button>
+                    </div>
+                 </div>
+               )
+             ) : (
+               <div className="bg-rose-50 p-4 rounded-xl border border-rose-100 flex items-center justify-between">
+                 <div>
+                   <p className="text-sm text-rose-800 font-bold">Lock Enabled</p>
+                   <p className="text-xs text-rose-600">Passcode: ****</p>
+                 </div>
+                 <button 
+                   onClick={handleDisableLock}
+                   className="px-4 py-2 bg-white text-rose-500 border border-rose-200 rounded-lg text-xs font-bold hover:bg-rose-50"
+                 >
+                   Disable
+                 </button>
+               </div>
+             )}
           </div>
 
           <div className="h-px bg-gray-100"></div>
