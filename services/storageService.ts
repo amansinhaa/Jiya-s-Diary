@@ -20,8 +20,7 @@ const handleApiError = async (response: Response, action: string) => {
   }
 
   if (response.status === 403) {
-    console.error(`PERMISSION DENIED for ${action}. This is a Firebase Storage Rules issue.`);
-    throw new Error(`Permission Denied (403). Please go to your Firebase Console > Storage > Rules and allow public read/write access: "allow read, write: if true;"`);
+    throw new Error(`Permission Denied (403). Check Firebase Rules.`);
   }
   
   throw new Error(errorMessage);
@@ -31,10 +30,11 @@ export const createCloudBoard = async (data: any): Promise<string> => {
   const id = generateId();
   try {
     const payload = JSON.stringify(data);
-    console.log(`Creating cloud board. Payload size: ${(new Blob([payload]).size / 1024 / 1024).toFixed(2)} MB`);
-
-    const response = await fetch(`${BASE_URL}?uploadType=media&name=${id}`, {
+    const encodedId = encodeURIComponent(id);
+    
+    const response = await fetch(`${BASE_URL}?uploadType=media&name=${encodedId}`, {
       method: 'POST',
+      mode: 'cors',
       headers: {
         'Content-Type': 'application/json',
       },
@@ -47,7 +47,6 @@ export const createCloudBoard = async (data: any): Promise<string> => {
     
     return id;
   } catch (error) {
-    console.error('Cloud Create Error:', error);
     throw error;
   }
 };
@@ -55,10 +54,11 @@ export const createCloudBoard = async (data: any): Promise<string> => {
 export const updateCloudBoard = async (id: string, data: any): Promise<void> => {
   try {
     const payload = JSON.stringify(data);
-    console.log(`Updating cloud board. Payload size: ${(new Blob([payload]).size / 1024 / 1024).toFixed(2)} MB`);
+    const encodedId = encodeURIComponent(id);
 
-    const response = await fetch(`${BASE_URL}?uploadType=media&name=${id}`, {
+    const response = await fetch(`${BASE_URL}?uploadType=media&name=${encodedId}`, {
       method: 'POST',
+      mode: 'cors',
       headers: {
         'Content-Type': 'application/json',
       },
@@ -69,7 +69,6 @@ export const updateCloudBoard = async (id: string, data: any): Promise<void> => 
       await handleApiError(response, 'Update Board');
     }
   } catch (error) {
-    console.error('Cloud Update Error:', error);
     throw error;
   }
 };
@@ -77,8 +76,11 @@ export const updateCloudBoard = async (id: string, data: any): Promise<void> => 
 export const getCloudBoard = async (id: string): Promise<any> => {
   try {
     const timestamp = new Date().getTime();
-    const response = await fetch(`${BASE_URL}/${id}?alt=media&t=${timestamp}`, {
+    const encodedId = encodeURIComponent(id);
+    
+    const response = await fetch(`${BASE_URL}/${encodedId}?alt=media&t=${timestamp}`, {
       method: 'GET',
+      mode: 'cors',
       headers: {
         'Accept': 'application/json'
       },
@@ -91,21 +93,18 @@ export const getCloudBoard = async (id: string): Promise<any> => {
     }
     return await response.json();
   } catch (error) {
-    console.error('Cloud Fetch Error:', error);
     throw error;
   }
 };
 
 export const uploadMedia = async (file: File): Promise<string> => {
-  // Removing 'images/' prefix to test if folder permissions are the issue, keeping it flat for now.
-  // Also ensures simpler permission rules match.
   const fileName = `img_${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.]/g, '_')}`;
   const encodedName = encodeURIComponent(fileName);
   
   try {
-    console.log(`Uploading image: ${fileName}`);
     const response = await fetch(`${BASE_URL}?uploadType=media&name=${encodedName}`, {
       method: 'POST',
+      mode: 'cors',
       headers: {
         'Content-Type': file.type,
       },

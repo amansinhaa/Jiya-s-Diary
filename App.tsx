@@ -49,7 +49,6 @@ const FONT_SIZES = [
 
 const App: React.FC = () => {
   // --- Persistent State Initialization ---
-  // Defaulting to empty or initial to enforce cloud-first loading logic
   const [items, setItems] = useState<VisionItem[]>([]);
   const [headerConfig, setHeaderConfig] = useState({
     title: "Jiya's Era ✨",
@@ -64,7 +63,7 @@ const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true); 
   const [saveStatus, setSaveStatus] = useState<string>('');
   const [isUploading, setIsUploading] = useState(false);
-  const [isInteracting, setIsInteracting] = useState(false); // New: Track if user is busy to pause polling overwrites
+  const [isInteracting, setIsInteracting] = useState(false);
 
   const [activeTab, setActiveTab] = useState<'board' | 'chat' | 'create' | 'journal'>('board');
   const [editingItem, setEditingItem] = useState<VisionItem | null>(null);
@@ -109,7 +108,7 @@ const App: React.FC = () => {
   // Debounce Ref for Auto Save
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Refs for polling comparison to avoid dependency loops
+  // Refs for polling comparison
   const itemsRef = useRef(items);
   const headerRef = useRef(headerConfig);
   const chatRef = useRef(chatMessages);
@@ -119,7 +118,6 @@ const App: React.FC = () => {
   useEffect(() => { headerRef.current = headerConfig; }, [headerConfig]);
   useEffect(() => { chatRef.current = chatMessages; }, [chatMessages]);
 
-  // Helper to safely update URL
   const updateUrlSafe = (id: string) => {
     try {
       const newUrl = `${window.location.pathname}?id=${id}`;
@@ -136,25 +134,16 @@ const App: React.FC = () => {
       const params = new URLSearchParams(window.location.search);
       let idFromUrl = params.get('id');
 
-      // 1. Try URL
       if (!idFromUrl) {
-        // 2. Try LocalStorage ID
         idFromUrl = localStorage.getItem('jiya_board_id');
-        if (idFromUrl) {
-           updateUrlSafe(idFromUrl);
-        }
+        if (idFromUrl) updateUrlSafe(idFromUrl);
       }
 
       if (idFromUrl) {
-        // LOAD EXISTING BOARD (Cloud First Strategy)
         try {
-          // Check internet first - if offline, load from local storage backup immediately
-          if (!navigator.onLine) {
-             throw new Error("Offline");
-          }
+          if (!navigator.onLine) throw new Error("Offline");
 
           const data = await getCloudBoard(idFromUrl);
-          
           if (data.items && Array.isArray(data.items)) setItems(data.items);
           if (data.headerConfig) setHeaderConfig(data.headerConfig);
           if (data.chatMessages) {
@@ -164,43 +153,44 @@ const App: React.FC = () => {
              }));
              setChatMessages(fixedMessages);
           }
-          
           setBoardId(idFromUrl);
           localStorage.setItem('jiya_board_id', idFromUrl);
           setIsDataLoaded(true); 
           
-        } catch (err) {
-          console.log("Cloud load failed or offline, falling back to local storage", err);
-          // Fallback to local storage
-          try {
-            const savedItems = localStorage.getItem('jiya_vision_items');
-            if (savedItems) setItems(JSON.parse(savedItems));
-            else setItems(INITIAL_ITEMS);
+        } catch (err: any) {
+          console.warn("Cloud load failed:", err);
+          
+          // Fallback to local
+          const savedItems = localStorage.getItem('jiya_vision_items');
+          if (savedItems) setItems(JSON.parse(savedItems));
+          else setItems(INITIAL_ITEMS);
 
-            const savedHeader = localStorage.getItem('jiya_header_config');
-            if (savedHeader) setHeaderConfig(JSON.parse(savedHeader));
+          const savedHeader = localStorage.getItem('jiya_header_config');
+          if (savedHeader) setHeaderConfig(JSON.parse(savedHeader));
 
-            const savedChat = localStorage.getItem('jiya_chat_history');
-            if (savedChat) {
-                setChatMessages(JSON.parse(savedChat).map((m:any) => ({...m, timestamp: new Date(m.timestamp)})));
-            }
-            if (idFromUrl) setBoardId(idFromUrl); // Keep ID for reconnection
-            setIsDataLoaded(true);
-          } catch (localErr) {
-            console.error("Local load failed", localErr);
-            setItems(INITIAL_ITEMS);
-            setIsDataLoaded(true);
+          const savedChat = localStorage.getItem('jiya_chat_history');
+          if (savedChat) setChatMessages(JSON.parse(savedChat).map((m:any) => ({...m, timestamp: new Date(m.timestamp)})));
+          
+          if (idFromUrl) {
+             setBoardId(idFromUrl);
+             // CRITICAL FIX: If board not found (404), it implies we have an ID locally but it's not on cloud. 
+             // Triggers auto-save to restore it.
+             if (err.message === 'Board not found' || err.message.includes('404')) {
+               console.log("Board missing on cloud, triggering re-sync...");
+               // We set isDataLoaded true so the auto-save effect kicks in and uploads our local copy
+             }
           }
+          setIsDataLoaded(true);
         }
       } else {
-        // CREATE NEW BOARD (AUTOMATICALLY GO LIVE)
+        // CREATE NEW BOARD
         try {
           const newId = await createCloudBoard({
             items: INITIAL_ITEMS,
             headerConfig,
             chatMessages
           });
-          setItems(INITIAL_ITEMS); // Set initial state
+          setItems(INITIAL_ITEMS);
           setBoardId(newId);
           localStorage.setItem('jiya_board_id', newId);
           updateUrlSafe(newId);
@@ -217,22 +207,17 @@ const App: React.FC = () => {
     initApp();
   }, []);
 
-  // --- Polling for Real-Time-ish Updates ---
+  // --- Polling for Real-Time Updates ---
   useEffect(() => {
     if (!boardId || !isDataLoaded) return;
 
     const pollInterval = setInterval(async () => {
-      // Logic: Only fetch updates if:
-      // 1. We have an ID
-      // 2. We are online
-      // 3. User is NOT currently interacting (dragging, editing modal open) to prevent overwriting their active work
-      // 4. We are NOT currently saving (to avoid race condition where we fetch our own just-sent stale data)
+      // Don't poll if interacting or saving
       if (!navigator.onLine || isInteracting || saveStatus === 'Saving...' || editingItem || showNewJournalForm) return;
 
       try {
         const cloudData = await getCloudBoard(boardId);
         
-        // Compare with current state (using Refs to access latest state without re-running effect)
         const currentDataStr = JSON.stringify({ items: itemsRef.current, headerConfig: headerRef.current });
         const cloudDataStr = JSON.stringify({ items: cloudData.items, headerConfig: cloudData.headerConfig });
 
@@ -240,21 +225,18 @@ const App: React.FC = () => {
            console.log("🔄 Syncing changes from cloud...");
            if (cloudData.items && Array.isArray(cloudData.items)) setItems(cloudData.items);
            if (cloudData.headerConfig) setHeaderConfig(cloudData.headerConfig);
-           if (cloudData.chatMessages) {
-             // Only update chat if length differs to avoid scroll jumps, simplified for now
-             if (cloudData.chatMessages.length !== chatRef.current.length) {
-                const fixedMessages = cloudData.chatMessages.map((msg: any) => ({
-                    ...msg,
-                    timestamp: new Date(msg.timestamp)
-                }));
-                setChatMessages(fixedMessages);
-             }
+           if (cloudData.chatMessages && cloudData.chatMessages.length !== chatRef.current.length) {
+              const fixedMessages = cloudData.chatMessages.map((msg: any) => ({
+                  ...msg,
+                  timestamp: new Date(msg.timestamp)
+              }));
+              setChatMessages(fixedMessages);
            }
         }
       } catch (e) {
-        // Silent polling fail
+        // Silent catch for polling
       }
-    }, 3000); // Poll every 3 seconds
+    }, 3000); 
 
     return () => clearInterval(pollInterval);
   }, [boardId, isDataLoaded, isInteracting, saveStatus, editingItem, showNewJournalForm]);
@@ -262,15 +244,12 @@ const App: React.FC = () => {
 
   // --- Persistence & Auto Save Effects ---
   useEffect(() => {
-    // 1. Always save to LocalStorage (as backup/offline)
     if (items.length > 0) localStorage.setItem('jiya_vision_items', JSON.stringify(items));
     localStorage.setItem('jiya_header_config', JSON.stringify(headerConfig));
     localStorage.setItem('jiya_chat_history', JSON.stringify(chatMessages));
 
-    // 2. Cloud Auto-Save Logic (Debounced)
     if (boardId && isDataLoaded) {
       setSaveStatus('Saving...');
-      
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
 
       saveTimeoutRef.current = setTimeout(async () => {
@@ -284,13 +263,13 @@ const App: React.FC = () => {
             setSaveStatus('Saved');
             setTimeout(() => setSaveStatus(''), 2000);
           } else {
-             setSaveStatus('Offline (Saved Locally)');
+             setSaveStatus('Offline');
           }
         } catch (error) {
           console.error("Auto-save failed", error);
-          setSaveStatus('Offline (Saved Locally)');
+          setSaveStatus('Retry Sync');
         }
-      }, 1000); // Fast 1s debounce
+      }, 1000); 
     }
   }, [items, headerConfig, chatMessages, boardId, isDataLoaded]);
 
@@ -355,8 +334,6 @@ const App: React.FC = () => {
     alert('Vision Board Restored Successfully! ✨');
   };
 
-  // --- CRUD Operations ---
-
   const handleUpdateItem = (updatedItem: VisionItem) => {
     setItems(prev => prev.map(item => item.id === updatedItem.id ? updatedItem : item));
     setEditingItem(null);
@@ -373,7 +350,7 @@ const App: React.FC = () => {
     if (!createContent.trim()) return;
 
     const newItem: VisionItem = {
-      id: Date.now().toString() + Math.random().toString(36).substr(2, 9), // Unique ID for collaboration safety
+      id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
       type: createType,
       content: createContent,
       title: createTitle || (createType === 'image' ? 'Vibes' : 'Untitled'),
@@ -387,7 +364,6 @@ const App: React.FC = () => {
 
     setItems(prev => [newItem, ...prev]);
     setActiveTab('board');
-    // Reset Form
     setCreateContent('');
     setCreateTitle('');
     setCreateSticker('');
@@ -400,7 +376,7 @@ const App: React.FC = () => {
   // --- Drag and Drop Logic ---
 
   const handleDragStart = (e: React.DragEvent, index: number) => {
-    setIsInteracting(true); // Pause polling
+    setIsInteracting(true); 
     setDraggedItemIndex(index);
     e.dataTransfer.effectAllowed = "move";
   };
@@ -412,7 +388,7 @@ const App: React.FC = () => {
 
   const handleDrop = (e: React.DragEvent, targetIndex: number) => {
     e.preventDefault();
-    setIsInteracting(false); // Resume polling possibility (after save)
+    setIsInteracting(false); 
     if (draggedItemIndex === null || draggedItemIndex === targetIndex) return;
 
     const boardItems = items.filter(i => i.type !== 'journal');
@@ -474,8 +450,6 @@ const App: React.FC = () => {
     }
   };
 
-  // --- AI Logic ---
-  
   const handleSendMessage = async () => {
     if (!userInput.trim()) return;
     const newMsg: ChatMessage = { role: 'user', text: userInput, timestamp: new Date() };
@@ -515,7 +489,7 @@ const App: React.FC = () => {
 
   const addJournalEntry = () => {
     if (!journalText.trim()) return;
-    setIsInteracting(true); // Flag interaction to prevent poll overwrite immediately
+    setIsInteracting(true); 
     const newItem: VisionItem = {
       id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
       type: 'journal',
@@ -532,11 +506,9 @@ const App: React.FC = () => {
     setJournalTitle('');
     setJournalSticker('');
     
-    // Allow debounce to save, then polling will resume naturally after user stops interacting with form
     setTimeout(() => setIsInteracting(false), 2000);
   };
 
-  // --- Loading Screen ---
   if (isLoading) {
     return (
       <div className="min-h-screen bg-[#fdf2f8] flex flex-col items-center justify-center p-4">
@@ -549,14 +521,20 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen pb-24 relative overflow-hidden bg-[#fdf2f8]">
-       {/* Background Elements */}
        <div className="fixed top-0 left-0 w-full h-full pointer-events-none z-0">
           <div className="absolute top-10 left-10 w-64 h-64 bg-pink-300 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-blob"></div>
           <div className="absolute top-0 right-10 w-72 h-72 bg-purple-300 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-blob animation-delay-2000"></div>
           <div className="absolute -bottom-8 left-20 w-72 h-72 bg-yellow-300 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-blob animation-delay-4000"></div>
        </div>
+       
+       {/* Sync Status Indicator */}
+       {saveStatus && (
+         <div className="fixed top-4 right-4 z-50 bg-white/80 backdrop-blur-md px-3 py-1.5 rounded-full shadow-sm border border-gray-100 flex items-center gap-2">
+            <span className={`w-2 h-2 rounded-full ${saveStatus === 'Saved' || saveStatus === 'Synced' ? 'bg-green-400' : saveStatus === 'Saving...' ? 'bg-yellow-400' : 'bg-red-400'}`}></span>
+            <span className="text-[10px] font-bold uppercase text-gray-500">{saveStatus}</span>
+         </div>
+       )}
 
-       {/* Modals */}
        {editingItem && (
          <EditModal 
            item={editingItem}
@@ -590,7 +568,6 @@ const App: React.FC = () => {
          <SettingsModal onClose={() => setShowSettingsModal(false)} />
        )}
 
-       {/* Header */}
        <header className="relative z-10 p-4 sm:p-6 text-center group cursor-pointer" onClick={() => !isRearranging && setIsEditingHeader(true)}>
          <div className="relative inline-block">
             <h1 className="text-3xl sm:text-5xl font-handwriting text-rose-600 drop-shadow-sm floating">
@@ -613,10 +590,8 @@ const App: React.FC = () => {
          </div>
        </header>
 
-       {/* Main Content Area */}
        <main className="relative z-10 max-w-7xl mx-auto px-4">
           
-          {/* VISION BOARD TAB */}
           {activeTab === 'board' && (
             <div className="pb-20 mt-2">
               {Array.isArray(items) && (
@@ -631,7 +606,6 @@ const App: React.FC = () => {
                       onDrop={(e) => handleDrop(e, index)}
                     >
                       <div className={`flex justify-center relative ${isRearranging ? 'animate-wiggle' : ''}`}>
-                        {/* Delete button in Rearrange Mode */}
                         {isRearranging && (
                           <button 
                             onClick={(e) => {
@@ -644,7 +618,6 @@ const App: React.FC = () => {
                           </button>
                         )}
 
-                        {/* Edit Button in Rearrange Mode */}
                         {isRearranging && (
                           <button
                             onClick={(e) => {
@@ -657,7 +630,6 @@ const App: React.FC = () => {
                           </button>
                         )}
 
-                        {/* Wrapper for scaling and sizing */}
                         <div style={{ transform: `scale(${item.scale || 1})`, transition: 'transform 0.2s' }}>
                           {item.type === 'image' ? (
                             <div className="w-40 sm:w-56">
@@ -688,7 +660,6 @@ const App: React.FC = () => {
                 </div>
               )}
 
-              {/* Footer Actions */}
               <div className="mt-12 mb-20 text-center space-y-4">
                 <div className="inline-flex items-center gap-4 sm:gap-6 bg-white/60 backdrop-blur-sm px-4 sm:px-6 py-3 rounded-full shadow-sm border border-white/50">
                    <button 
@@ -729,7 +700,6 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {/* JOURNAL TAB - Compacted */}
           {activeTab === 'journal' && (
             <div className="max-w-3xl mx-auto pb-24">
                <div className="flex justify-between items-center mb-6 bg-white/50 p-3 sm:p-4 rounded-2xl backdrop-blur-sm">
@@ -750,8 +720,6 @@ const App: React.FC = () => {
                             {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
                           </span>
                       </div>
-                      
-                      {/* Sticker Pack */}
                       <div className="mb-4">
                          <label className="block text-[10px] sm:text-xs font-bold text-gray-400 uppercase mb-2">Mood / Sticker</label>
                          <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto p-2 bg-gray-50 rounded-xl border border-gray-100 scrollbar-thin">
@@ -830,7 +798,6 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {/* CHAT TAB */}
           {activeTab === 'chat' && (
             <div className="max-w-2xl mx-auto bg-white/80 backdrop-blur-md rounded-3xl shadow-xl border border-white h-[70vh] flex flex-col overflow-hidden">
                <div className="bg-gradient-to-r from-pink-400 to-rose-400 p-4 text-white flex items-center gap-3">
@@ -888,13 +855,11 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {/* UNIFIED CREATE TAB - COMPACTED */}
           {activeTab === 'create' && (
             <div className="max-w-md mx-auto bg-white/90 backdrop-blur-md rounded-3xl shadow-xl p-4 sm:p-5 border-4 border-dashed border-pink-200">
                <h2 className="text-xl sm:text-2xl font-handwriting text-gray-800 mb-2 text-center">Manifest Something New</h2>
                
                <div className="space-y-2 animate-fadeIn">
-                 {/* Type Selector - Unified Flow */}
                  <div className="flex bg-pink-100 p-1 rounded-xl mb-2">
                     <button 
                       onClick={() => setCreateType('note')}
@@ -910,7 +875,6 @@ const App: React.FC = () => {
                     </button>
                  </div>
 
-                 {/* Preview - Compact */}
                  <div className="flex justify-center py-2 bg-pink-50/50 rounded-xl mb-2 border border-pink-100 border-dashed min-h-[140px] items-center overflow-hidden">
                     <div style={{ transform: `scale(${createScale * 0.7})`, transition: 'transform 0.2s' }}>
                       {createType === 'note' ? (
@@ -963,7 +927,6 @@ const App: React.FC = () => {
                     />
                  ) : (
                     <div className="space-y-2">
-                      {/* Image Upload Section */}
                       <div className="bg-white p-2 rounded-xl border border-pink-100 shadow-sm">
                         <label className="block text-[8px] font-bold text-rose-400 uppercase mb-1">Upload Image</label>
                         <div className="relative">
@@ -985,7 +948,6 @@ const App: React.FC = () => {
                         </div>
                       </div>
 
-                      {/* Manual URL Input */}
                       <input 
                         type="text"
                         value={createContent}
@@ -996,7 +958,6 @@ const App: React.FC = () => {
                     </div>
                  )}
 
-                 {/* Shared Fields - Compact */}
                  <div className="flex gap-2">
                    <div className="flex-1">
                      <label className="block text-[8px] font-bold text-gray-500 uppercase mb-1">Date</label>
@@ -1023,7 +984,6 @@ const App: React.FC = () => {
                    )}
                  </div>
                  
-                 {/* Stickers - Compact */}
                  <div>
                     <label className="block text-[8px] font-bold text-gray-500 uppercase mb-1">Sticker</label>
                     <div className="flex flex-wrap gap-1 max-h-16 overflow-y-auto p-1 bg-pink-50 rounded-xl border border-pink-100 scrollbar-thin">
@@ -1039,9 +999,7 @@ const App: React.FC = () => {
                     </div>
                  </div>
 
-                 {/* Size & Rotation Sliders - Compact */}
                  <div className="grid grid-cols-2 gap-2 mt-1">
-                    {/* Tilt Slider */}
                     <div>
                       <label className="block text-[8px] font-bold text-gray-500 uppercase mb-1">Tilt</label>
                       <div className="bg-white p-2 rounded-xl border border-pink-100 shadow-sm">
@@ -1062,7 +1020,6 @@ const App: React.FC = () => {
                       </div>
                     </div>
 
-                    {/* Scale Slider */}
                     <div>
                       <label className="block text-[8px] font-bold text-gray-500 uppercase mb-1">Size</label>
                       <div className="bg-white p-2 rounded-xl border border-pink-100 shadow-sm">
@@ -1083,7 +1040,6 @@ const App: React.FC = () => {
                      </div>
                    </div>
 
-                   {/* Font Size Slider for Note */}
                    {createType === 'note' && (
                      <div className="col-span-2">
                        <label className="block text-[8px] font-bold text-gray-500 uppercase mb-1">Text Size</label>
@@ -1120,7 +1076,6 @@ const App: React.FC = () => {
 
        </main>
 
-       {/* Mobile/Sticky Navigation */}
        <div className="fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-white/90 backdrop-blur-xl border border-white/50 shadow-2xl rounded-full px-8 py-3 z-50 flex items-center gap-10">
          <button 
            onClick={() => setActiveTab('board')}
